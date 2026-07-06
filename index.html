@@ -137,7 +137,7 @@
       <button class="btn" id="btnAddPlayer">Add</button>
       <input type="text" id="rosterSearch" placeholder="🔍 Search…" style="margin-left:auto">
     </div>
-    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic: a no-show blocks selection for 14 days from the event date.</p>
+    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic: a no-show blocks selection for 14 days from the event date. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically.</p>
     <div id="rosterTable"></div>
   </div>
 </section>
@@ -196,10 +196,36 @@ function save(){ localStorage.setItem(LS_KEY, JSON.stringify(db)); }
 function toast(msg,err){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2600); }
 const MODES={desert:'Desert Storm',canyon:'Canyon Storm'};
 const norm=s=>s.trim().toLowerCase();
-function getPlayer(name){
+function resolveKey(name){
   const k=norm(name);
-  if(!db.players[k]) db.players[k]={name:name.trim(),guaranteed:false,banUntil:null,noShows:0,selections:0,lastSelected:{desert:null,canyon:null},notes:''};
+  if(db.players[k]) return k;
+  // check former names (aliases) so renamed players keep their history
+  for(const key of Object.keys(db.players))
+    if((db.players[key].aliases||[]).includes(k)) return key;
+  return null;
+}
+function getPlayer(name){
+  let k=resolveKey(name);
+  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:null,noShows:0,selections:0,lastSelected:{desert:null,canyon:null},aliases:[],notes:''}; }
   return db.players[k];
+}
+function renamePlayer(oldKey,newName){
+  newName=newName.trim();
+  if(!newName) return 'Name cannot be empty';
+  const nk=norm(newName), p=db.players[oldKey];
+  const existing=resolveKey(newName);
+  if(existing && existing!==oldKey) return `"${newName}" already belongs to ${db.players[existing].name} (or is one of their former names)`;
+  p.aliases=p.aliases||[];
+  if(norm(p.name)!==nk && !p.aliases.includes(norm(p.name))) p.aliases.push(norm(p.name));
+  p.aliases=p.aliases.filter(a=>a!==nk); // new name is no longer an alias
+  const oldName=p.name; p.name=newName;
+  delete db.players[oldKey]; db.players[nk]=p;
+  // update names in saved events so history reads correctly
+  for(const ev of db.events){
+    for(const slot of ['noon','evening']) for(const m of ev.teams[slot]) if(norm(m.name)===norm(oldName)||p.aliases.includes(norm(m.name))) m.name=newName;
+    ev.waitlist=ev.waitlist.map(n=>(norm(n)===norm(oldName)||p.aliases.includes(norm(n)))?newName:n);
+  }
+  save(); return null;
 }
 function isBanned(p,dateStr){ return p.banUntil && dateStr < p.banUntil; }
 function fmtDate(d){ return d||'—'; }
@@ -236,8 +262,9 @@ function addApps(lines){
     const name=parts[0];
     if(/^name$/i.test(name)) continue; // header row
     const avail=parseAvail(parts[1]);
-    if(apps.some(a=>norm(a.name)===norm(name))){dupes++;continue;}
-    apps.push({name,avail}); getPlayer(name); added++;
+    const p=getPlayer(name); // resolves former names to the current player
+    if(apps.some(a=>norm(a.name)===norm(p.name))){dupes++;continue;}
+    apps.push({name:p.name,avail}); added++;
   }
   save(); renderApps();
   toast(`Added ${added} application${added===1?'':'s'}`+(dupes?` (${dupes} duplicates skipped)`:''));
@@ -431,8 +458,9 @@ function renderRoster(){
     <div class="stat"><div class="n">${db.events.length}</div><div class="l">Events run</div></div>`;
   const rows=shown.map(p=>{
     const k=norm(p.name);
+    const aka=(p.aliases||[]).length?`<div class="muted" style="font-size:11px">formerly: ${p.aliases.map(esc).join(', ')}</div>`:'';
     return `<tr>
-      <td>${esc(p.name)}</td>
+      <td>${esc(p.name)} <button class="mini" title="Rename (keeps history)" onclick="uiRename('${k}')">✏️</button>${aka}</td>
       <td><input type="checkbox" ${p.guaranteed?'checked':''} onchange="setGuar('${k}',this.checked)"></td>
       <td>${p.selections}</td>
       <td class="muted">${fmtDate(p.lastSelected.desert)}</td>
@@ -447,6 +475,14 @@ function renderRoster(){
     ${rows||'<tr><td colspan=8 class=muted>No players yet — add them above or import applications.</td></tr>'}</table>`;
 }
 window.setGuar=(k,v)=>{ db.players[k].guaranteed=v; save(); renderRoster(); };
+window.uiRename=k=>{
+  const p=db.players[k];
+  const nn=prompt(`New name for ${p.name}?\nTheir history, fairness priority, bans and no-shows stay attached, and applications under the old name will still match.`,p.name);
+  if(nn===null||nn.trim()===p.name) return;
+  const err=renamePlayer(k,nn);
+  if(err){ toast(err,'err'); return; }
+  renderRoster(); toast(`Renamed to ${nn.trim()} — history kept`);
+};
 window.clearBan=k=>{ db.players[k].banUntil=null; save(); renderRoster(); toast('Ban cleared'); };
 window.delPlayer=k=>{ if(confirm(`Remove ${db.players[k].name} from the roster? History stays in past events.`)){ delete db.players[k]; save(); renderRoster(); } };
 document.getElementById('btnAddPlayer').onclick=()=>{
@@ -534,9 +570,9 @@ document.getElementById('importJSON').onchange=e=>{
   r.readAsText(f);
 };
 document.getElementById('btnExportRoster').onclick=()=>{
-  let csv='name,guaranteed,times_picked,last_desert,last_canyon,no_shows,ban_until\n';
+  let csv='name,former_names,guaranteed,times_picked,last_desert,last_canyon,no_shows,ban_until\n';
   for(const p of Object.values(db.players).sort((a,b)=>a.name.localeCompare(b.name)))
-    csv+=`${p.name},${p.guaranteed?'yes':'no'},${p.selections},${p.lastSelected.desert||''},${p.lastSelected.canyon||''},${p.noShows},${p.banUntil||''}\n`;
+    csv+=`${p.name},${(p.aliases||[]).join('; ')},${p.guaranteed?'yes':'no'},${p.selections},${p.lastSelected.desert||''},${p.lastSelected.canyon||''},${p.noShows},${p.banUntil||''}\n`;
   download('roster.csv',csv,'text/csv');
 };
 document.getElementById('btnWipe').onclick=()=>{
