@@ -376,6 +376,7 @@ function runAssign(){
 
 function renderAssignment(){
   const A=pendingAssignment; if(!A) return;
+  A.waitlist.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
   const teamHtml=(slot,label)=>{
     const list=A.teams[slot];
     const rows=list.map((m,i)=>`<tr>
@@ -387,12 +388,18 @@ function renderAssignment(){
     return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}</h3>
       <table><tr><th>#</th><th>Player</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=4 class=muted>empty</td></tr>'}</table></div>`;
   };
-  const wl=A.waitlist.map((m,i)=>`<tr><td>${i+1}</td><td>${esc(m.name)} ${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
-    <td><button class="mini" onclick="promote(${i})">↑ promote</button> <button class="mini" title="Remove from event entirely" onclick="removeWait(${i})">✕</button></td></tr>`).join('');
+  const wl=A.waitlist.map((m,i)=>{
+    const btns=[];
+    if(m.avail!=='evening') btns.push(`<button class="mini" onclick="promoteTo(${i},'noon')">→ ☀️ Noon</button>`);
+    if(m.avail!=='noon') btns.push(`<button class="mini" onclick="promoteTo(${i},'evening')">→ 🌙 Evening</button>`);
+    btns.push(`<button class="mini" title="Remove from event entirely" onclick="removeWait(${i})">✕</button>`);
+    return `<tr><td>${i+1}</td><td>${esc(m.name)} ${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
+    <td>${btns.join(' ')}</td></tr>`;
+  }).join('');
   const bn=A.banned.map(b=>`<li>${esc(b.name)} — banned until ${b.until}</li>`).join('');
   document.getElementById('assignResult').innerHTML=`
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
-    ${A.waitlist.length?`<h3>Waitlist (priority order — promote if someone drops)</h3><table><tr><th>#</th><th>Player</th><th></th></tr>${wl}</table>`:''}
+    ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th><th></th></tr>${wl}</table>`:''}
     ${A.banned.length?`<h3 style="color:var(--red)">Excluded — no-show ban</h3><ul class="muted">${bn}</ul>`:''}
     <p class="help">Role order follows selection priority; click a STARTER/SUB badge to reorder manually. Nothing is recorded until you confirm.</p>`;
   document.getElementById('btnSaveEvent').style.display='';
@@ -415,13 +422,11 @@ window.removeWait=i=>{
   apps=apps.filter(a=>norm(a.name)!==norm(m.name));
   renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
 };
-window.promote=i=>{
+window.promoteTo=(i,slot)=>{
   const A=pendingAssignment, m=A.waitlist[i];
-  let t=null;
-  if(m.avail!=='evening' && A.teams.noon.length<A.teamSize) t='noon';
-  if(!t && m.avail!=='noon' && A.teams.evening.length<A.teamSize) t='evening';
-  if(!t){ toast('No space in a team matching their availability','err'); return; }
-  A.waitlist.splice(i,1); A.teams[t].push(m); renderAssignment();
+  if(A.teams[slot].length>=A.teamSize){ toast(`${slot==='noon'?'Noon':'Evening'} team is full (${A.teamSize}) — drop someone first`,'err'); return; }
+  A.waitlist.splice(i,1); A.teams[slot].push(m); renderAssignment();
+  toast(`${m.name} added to ${slot==='noon'?'☀️ Noon':'🌙 Evening'}`);
 };
 window.toggleStarter=(slot,i)=>{
   // swap with boundary member to flip role
