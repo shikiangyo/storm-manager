@@ -113,7 +113,7 @@
 
   <div class="panel">
     <h2>3 · Assign teams</h2>
-    <p class="help">Selection order: <b>guaranteed players first</b>, then everyone else by <b>longest time since last selection</b> for this mode (never-selected players first; ties broken randomly). Players banned for a recent no-show are excluded. Availability only decides <i>which</i> team you join, never <i>whether</i> you get in — noon-only and both-slot applicants have equal odds.</p>
+    <p class="help">Selection order: <b>guaranteed players first</b>, then everyone else by <b>longest time since last selection</b> for this mode (never-selected players first; ties broken randomly). Players banned for a recent no-show <b>in this mode</b> are excluded (Desert and Canyon bans are separate). Availability only decides <i>which</i> team you join, never <i>whether</i> you get in — noon-only and both-slot applicants have equal odds.</p>
     <div class="row">
       <button class="btn gold" id="btnAssign">⚡ Auto-assign teams</button>
       <button class="btn ok" id="btnSaveEvent" style="display:none">✓ Confirm &amp; save event</button>
@@ -137,7 +137,7 @@
       <button class="btn" id="btnAddPlayer">Add</button>
       <input type="text" id="rosterSearch" placeholder="🔍 Search…" style="margin-left:auto">
     </div>
-    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic: a no-show blocks selection for 14 days from the event date. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically.</p>
+    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 14 days from the event date. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically.</p>
     <div id="rosterTable"></div>
   </div>
 </section>
@@ -146,7 +146,7 @@
 <section id="tab-history" style="display:none">
   <div class="panel">
     <h2>Events</h2>
-    <p class="help">After each battle, open the event and mark no-shows. Saving attendance applies the 2-week ban automatically.</p>
+    <p class="help">After each battle, open the event and mark no-shows. Saving attendance applies the 2-week ban automatically — only for the mode the no-show happened in.</p>
     <div id="eventList"></div>
   </div>
   <div class="panel" id="attendancePanel" style="display:none"></div>
@@ -170,7 +170,7 @@
     </div>
     <h3>How selection works</h3>
     <p class="help">
-      1. Banned players (no-show within the ban window) are removed from the pool.<br>
+      1. Banned players (no-show within the ban window <i>for this mode</i>) are removed from the pool. Desert Storm and Canyon Storm bans are tracked separately — a no-show in one doesn't block the other.<br>
       2. Guaranteed applicants fill spots first. If more guaranteed players apply than there are spots, the least-recently-picked among them win.<br>
       3. Remaining spots go to non-guaranteed applicants ordered by longest time since last selection <i>in that mode</i>. Never-selected players come first. Ties are broken randomly.<br>
       4. Noon-only players go to the Noon team, evening-only to Evening, and "both" players fill whichever team has more space — availability never changes your odds of getting in.<br>
@@ -188,8 +188,18 @@
 /* ================= state ================= */
 const LS_KEY='stormManagerData_v1';
 let db = load();
+function migrate(d){
+  // upgrade older data: bans used to be a single date across both modes
+  for(const k of Object.keys(d.players||{})){
+    const p=d.players[k];
+    p.aliases=p.aliases||[];
+    if(!p.banUntil||typeof p.banUntil==='string') p.banUntil={desert:p.banUntil||null,canyon:p.banUntil||null};
+  }
+  d.settings=d.settings||{banDays:14};
+  return d;
+}
 function load(){
-  try{ const d=JSON.parse(localStorage.getItem(LS_KEY)); if(d&&d.players) return d; }catch(e){}
+  try{ const d=JSON.parse(localStorage.getItem(LS_KEY)); if(d&&d.players) return migrate(d); }catch(e){}
   return { players:{}, events:[], settings:{banDays:14} };
 }
 function save(){ localStorage.setItem(LS_KEY, JSON.stringify(db)); }
@@ -206,7 +216,7 @@ function resolveKey(name){
 }
 function getPlayer(name){
   let k=resolveKey(name);
-  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:null,noShows:0,selections:0,lastSelected:{desert:null,canyon:null},aliases:[],notes:''}; }
+  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},aliases:[],notes:''}; }
   return db.players[k];
 }
 function renamePlayer(oldKey,newName){
@@ -227,7 +237,7 @@ function renamePlayer(oldKey,newName){
   }
   save(); return null;
 }
-function isBanned(p,dateStr){ return p.banUntil && dateStr < p.banUntil; }
+function isBanned(p,mode,dateStr){ return p.banUntil[mode] && dateStr < p.banUntil[mode]; }
 function fmtDate(d){ return d||'—'; }
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
@@ -290,9 +300,9 @@ function renderApps(){
   if(!apps.length){ document.getElementById('appList').innerHTML=''; return; }
   let rows=apps.map((a,i)=>{
     const p=getPlayer(a.name);
-    const banned=isBanned(p,date);
+    const banned=isBanned(p,mode,date);
     return `<tr>
-      <td>${esc(p.name)} ${p.guaranteed?'<span class="badge b-guar">guaranteed</span>':''} ${banned?`<span class="badge b-ban">banned until ${p.banUntil}</span>`:''}</td>
+      <td>${esc(p.name)} ${p.guaranteed?'<span class="badge b-guar">guaranteed</span>':''} ${banned?`<span class="badge b-ban">banned (${MODES[mode]}) until ${p.banUntil[mode]}</span>`:''}</td>
       <td>
         <select onchange="setAvail(${i},this.value)">
           <option value="noon" ${a.avail==='noon'?'selected':''}>noon</option>
@@ -323,7 +333,7 @@ document.getElementById('btnAssign').onclick=()=>{
   const banned=[], pool=[];
   for(const a of apps){
     const p=getPlayer(a.name);
-    (isBanned(p,date)?banned:pool).push({...a,p});
+    (isBanned(p,mode,date)?banned:pool).push({...a,p});
   }
   // selection order: guaranteed first, then by least-recently-picked; random tiebreak via pre-shuffle
   const rank=x=>x.p.lastSelected[mode]||'0000-00-00';
@@ -352,7 +362,7 @@ document.getElementById('btnAssign').onclick=()=>{
     if(t) teams[t].push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
     else waitlist.push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
   }
-  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil}))};
+  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]}))};
   renderAssignment();
 };
 
@@ -454,7 +464,7 @@ function renderRoster(){
   document.getElementById('rosterStats').innerHTML=`
     <div class="stat"><div class="n">${players.length}</div><div class="l">Players</div></div>
     <div class="stat"><div class="n">${players.filter(p=>p.guaranteed).length}</div><div class="l">Guaranteed</div></div>
-    <div class="stat"><div class="n">${players.filter(p=>isBanned(p,today)).length}</div><div class="l">Currently banned</div></div>
+    <div class="stat"><div class="n">${players.filter(p=>isBanned(p,'desert',today)||isBanned(p,'canyon',today)).length}</div><div class="l">Currently banned</div></div>
     <div class="stat"><div class="n">${db.events.length}</div><div class="l">Events run</div></div>`;
   const rows=shown.map(p=>{
     const k=norm(p.name);
@@ -466,7 +476,7 @@ function renderRoster(){
       <td class="muted">${fmtDate(p.lastSelected.desert)}</td>
       <td class="muted">${fmtDate(p.lastSelected.canyon)}</td>
       <td>${p.noShows?`<span style="color:var(--red)">${p.noShows}</span>`:'0'}</td>
-      <td>${isBanned(p,today)?`<span class="badge b-ban">until ${p.banUntil}</span> <button class="mini" onclick="clearBan('${k}')">clear</button>`:'—'}</td>
+      <td>${['desert','canyon'].map(m=>isBanned(p,m,today)?`<div><span class="badge b-ban">${m==='desert'?'Desert':'Canyon'} until ${p.banUntil[m]}</span> <button class="mini" onclick="clearBan('${k}','${m}')">clear</button></div>`:'').join('')||'—'}</td>
       <td><button class="mini" onclick="delPlayer('${k}')">🗑</button></td>
     </tr>`;
   }).join('');
@@ -483,7 +493,7 @@ window.uiRename=k=>{
   if(err){ toast(err,'err'); return; }
   renderRoster(); toast(`Renamed to ${nn.trim()} — history kept`);
 };
-window.clearBan=k=>{ db.players[k].banUntil=null; save(); renderRoster(); toast('Ban cleared'); };
+window.clearBan=(k,mode)=>{ db.players[k].banUntil[mode]=null; save(); renderRoster(); toast(`${mode==='desert'?'Desert Storm':'Canyon Storm'} ban cleared`); };
 window.delPlayer=k=>{ if(confirm(`Remove ${db.players[k].name} from the roster? History stays in past events.`)){ delete db.players[k]; save(); renderRoster(); } };
 document.getElementById('btnAddPlayer').onclick=()=>{
   const el=document.getElementById('newPlayerName'); const name=el.value.trim();
@@ -547,9 +557,10 @@ window.applyBans=id=>{
   for(const s of ['noon','evening']) for(const m of ev.teams[s]){
     if(m.attended===false && !m.banApplied){
       const p=getPlayer(m.name); p.noShows++;
-      const d=new Date(ev.date+'T00:00:00'); d.setDate(d.getDate()+ (db.settings.banDays||14));
+      const d=new Date(ev.date+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+ (db.settings.banDays||14));
       const until=d.toISOString().slice(0,10);
-      if(!p.banUntil || p.banUntil<until) p.banUntil=until;
+      // ban applies only to the mode where the no-show happened
+      if(!p.banUntil[ev.mode] || p.banUntil[ev.mode]<until) p.banUntil[ev.mode]=until;
       m.banApplied=true; bans++;
     }
     if(m.attended===null) m.attended=true; // default unmarked to showed
@@ -566,13 +577,13 @@ document.getElementById('btnExportJSON').onclick=()=>download('storm-manager-bac
 document.getElementById('importJSON').onchange=e=>{
   const f=e.target.files[0]; if(!f)return;
   const r=new FileReader();
-  r.onload=()=>{ try{ const d=JSON.parse(r.result); if(!d.players) throw 0; db=d; save(); toast('Data imported'); renderRoster(); renderEvents(); }catch(err){ toast('Invalid backup file','err'); } e.target.value=''; };
+  r.onload=()=>{ try{ const d=JSON.parse(r.result); if(!d.players) throw 0; db=migrate(d); save(); toast('Data imported'); renderRoster(); renderEvents(); }catch(err){ toast('Invalid backup file','err'); } e.target.value=''; };
   r.readAsText(f);
 };
 document.getElementById('btnExportRoster').onclick=()=>{
-  let csv='name,former_names,guaranteed,times_picked,last_desert,last_canyon,no_shows,ban_until\n';
+  let csv='name,former_names,guaranteed,times_picked,last_desert,last_canyon,no_shows,ban_desert_until,ban_canyon_until\n';
   for(const p of Object.values(db.players).sort((a,b)=>a.name.localeCompare(b.name)))
-    csv+=`${p.name},${(p.aliases||[]).join('; ')},${p.guaranteed?'yes':'no'},${p.selections},${p.lastSelected.desert||''},${p.lastSelected.canyon||''},${p.noShows},${p.banUntil||''}\n`;
+    csv+=`${p.name},${(p.aliases||[]).join('; ')},${p.guaranteed?'yes':'no'},${p.selections},${p.lastSelected.desert||''},${p.lastSelected.canyon||''},${p.noShows},${p.banUntil.desert||''},${p.banUntil.canyon||''}\n`;
   download('roster.csv',csv,'text/csv');
 };
 document.getElementById('btnWipe').onclick=()=>{
