@@ -98,7 +98,7 @@
 
   <div class="panel">
     <h2>2 · Add applications</h2>
-    <p class="help">Import a CSV with columns <code>name, availability</code> (availability = <code>noon</code>, <code>evening</code>, or <code>both</code>), or paste lines like <code>PlayerName, both</code>. Names not in the roster are added automatically as non-guaranteed.</p>
+    <p class="help">Import a CSV with columns <code>name, availability</code> (availability = <code>noon</code>, <code>evening</code>, or <code>both</code>), or paste lines like <code>PlayerName, both</code>. Names not in the roster are added automatically as non-guaranteed. <b>Applicants are placed into teams below immediately</b> — each name appears once, in a team, on the waitlist, or in the banned list. If teams are already formed, you'll be asked whether late additions re-shuffle everyone or just join the waitlist.</p>
     <div class="row">
       <input type="file" id="csvFile" accept=".csv,.txt">
       <button class="btn ghost" id="btnClearApps">Clear applications</button>
@@ -108,14 +108,13 @@
       <button class="btn" id="btnParsePaste">Add pasted lines</button>
       <span class="muted" id="appCount"></span>
     </div>
-    <div id="appList"></div>
   </div>
 
   <div class="panel">
-    <h2>3 · Assign teams</h2>
-    <p class="help">Selection order: <b>guaranteed players first</b>, then everyone else by <b>longest time since last selection</b> for this mode (never-selected players first; ties broken randomly). Players banned for a recent no-show <b>in this mode</b> are excluded (Desert and Canyon bans are separate). Availability only decides <i>which</i> team you join, never <i>whether</i> you get in — noon-only and both-slot applicants have equal odds.</p>
+    <h2>3 · Teams</h2>
+    <p class="help">Selection order: <b>guaranteed players first</b>, then everyone else by <b>longest time since last selection</b> for this mode (never-selected players first; ties broken randomly). Players banned for a recent no-show <b>in this mode</b> are excluded (Desert and Canyon bans are separate). Availability only decides <i>which</i> team you join, never <i>whether</i> you get in — noon-only and both-slot applicants have equal odds. Edits are manual: ↓ drops to waitlist, ↑ promotes, ✕ removes from the event — nothing reshuffles on its own. To change someone's availability, remove them and re-add with the new slot.</p>
     <div class="row">
-      <button class="btn gold" id="btnAssign">⚡ Auto-assign teams</button>
+      <button class="btn gold" id="btnAssign">⟳ Re-assign teams</button>
       <button class="btn ok" id="btnSaveEvent" style="display:none">✓ Confirm &amp; save event</button>
       <button class="btn ghost" id="btnExportTeams" style="display:none">Export teams CSV</button>
       <button class="btn ghost" id="btnCopyTeams" style="display:none">Copy roster text</button>
@@ -265,7 +264,7 @@ function parseAvail(s){
   return 'both';
 }
 function addApps(lines){
-  let added=0,dupes=0;
+  let added=0,dupes=0; const fresh=[];
   for(const line of lines){
     const parts=line.split(/[,;\t]/).map(x=>x.trim()).filter(Boolean);
     if(!parts.length) continue;
@@ -274,10 +273,30 @@ function addApps(lines){
     const avail=parseAvail(parts[1]);
     const p=getPlayer(name); // resolves former names to the current player
     if(apps.some(a=>norm(a.name)===norm(p.name))){dupes++;continue;}
-    apps.push({name:p.name,avail}); added++;
+    const app={name:p.name,avail}; apps.push(app); fresh.push(app); added++;
   }
   save(); renderApps();
-  toast(`Added ${added} application${added===1?'':'s'}`+(dupes?` (${dupes} duplicates skipped)`:''));
+  if(!added){ toast(dupes?`No new names — ${dupes} duplicate${dupes===1?'':'s'} skipped`:'No applications found','err'); return; }
+  if(!pendingAssignment){
+    runAssign();
+    toast(`${added} applicant${added===1?'':'s'} added and assigned`+(dupes?` (${dupes} duplicates skipped)`:''));
+  } else if(confirm(`Teams are already formed. ${added} new applicant${added===1?'':'s'} added.\n\nOK — re-assign EVERYONE fairly with the new names included (manual edits are lost)\nCancel — keep current teams and put the new name${added===1?'':'s'} on the waitlist`)){
+    runAssign(); toast('Teams re-assigned with new applicants included');
+  } else {
+    lateWaitlist(fresh); toast(`${added} late applicant${added===1?'':'s'} added to the waitlist`);
+  }
+}
+function lateWaitlist(fresh){
+  const A=pendingAssignment;
+  const rank=n=>getPlayer(n).lastSelected[A.mode]||'0000-00-00';
+  // order the late batch by the same priority rules before appending
+  fresh.sort((a,b)=>(getPlayer(b.name).guaranteed-getPlayer(a.name).guaranteed)||(rank(a.name)<rank(b.name)?-1:1));
+  for(const a of fresh){
+    const p=getPlayer(a.name);
+    if(isBanned(p,A.mode,A.date)) A.banned.push({name:p.name,until:p.banUntil[A.mode]});
+    else A.waitlist.push({name:p.name,avail:a.avail,guaranteed:p.guaranteed});
+  }
+  renderAssignment();
 }
 document.getElementById('csvFile').onchange=e=>{
   const f=e.target.files[0]; if(!f)return;
@@ -294,38 +313,27 @@ document.getElementById('btnClearApps').onclick=()=>{ apps=[]; pendingAssignment
 function availBadge(a){ return a==='noon'?'<span class="badge b-noon">noon</span>':a==='evening'?'<span class="badge b-eve">evening</span>':'<span class="badge b-both">both</span>'; }
 
 function renderApps(){
-  const date=document.getElementById('evDate').value;
-  const mode=document.getElementById('evMode').value;
-  document.getElementById('appCount').textContent=apps.length?`${apps.length} applications`:'';
-  if(!apps.length){ document.getElementById('appList').innerHTML=''; return; }
-  let rows=apps.map((a,i)=>{
-    const p=getPlayer(a.name);
-    const banned=isBanned(p,mode,date);
-    return `<tr>
-      <td>${esc(p.name)} ${p.guaranteed?'<span class="badge b-guar">guaranteed</span>':''} ${banned?`<span class="badge b-ban">banned (${MODES[mode]}) until ${p.banUntil[mode]}</span>`:''}</td>
-      <td>
-        <select onchange="setAvail(${i},this.value)">
-          <option value="noon" ${a.avail==='noon'?'selected':''}>noon</option>
-          <option value="evening" ${a.avail==='evening'?'selected':''}>evening</option>
-          <option value="both" ${a.avail==='both'?'selected':''}>both</option>
-        </select>
-      </td>
-      <td class="muted">last picked (${MODES[mode]}): ${fmtDate(p.lastSelected[mode])}</td>
-      <td><button class="mini" onclick="delApp(${i})">✕</button></td>
-    </tr>`;
-  }).join('');
-  document.getElementById('appList').innerHTML=`<table><tr><th>Player</th><th>Availability</th><th>Fairness info</th><th></th></tr>${rows}</table>`;
+  const c={noon:0,evening:0,both:0};
+  for(const a of apps) c[a.avail]++;
+  document.getElementById('appCount').textContent=apps.length?`${apps.length} applicants — ${c.noon} noon · ${c.evening} evening · ${c.both} both`:'';
 }
-window.setAvail=(i,v)=>{ apps[i].avail=v; };
-window.delApp=i=>{ apps.splice(i,1); renderApps(); };
-document.getElementById('evMode').onchange=renderApps;
-document.getElementById('evDate').onchange=renderApps;
+// mode/date/size changes invalidate bans & fairness, so re-run assignment
+function reassignOnChange(){ if(apps.length) runAssign(); }
+document.getElementById('evMode').onchange=reassignOnChange;
+document.getElementById('evDate').onchange=reassignOnChange;
+document.getElementById('evTeamSize').onchange=reassignOnChange;
+document.getElementById('evStarters').onchange=reassignOnChange;
 
 /* ================= assignment algorithm ================= */
 function shuffle(arr){ for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];} return arr; }
 
 document.getElementById('btnAssign').onclick=()=>{
   if(!apps.length){ toast('No applications added yet','err'); return; }
+  if(pendingAssignment && !confirm('Re-run assignment? Manual changes (drops, promotes, role toggles, removals stay removed) will be redone from scratch.')) return;
+  runAssign();
+};
+function runAssign(){
+  if(!apps.length) return;
   const mode=document.getElementById('evMode').value;
   const date=document.getElementById('evDate').value;
   const teamSize=+document.getElementById('evTeamSize').value||30;
@@ -364,7 +372,7 @@ document.getElementById('btnAssign').onclick=()=>{
   }
   pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]}))};
   renderAssignment();
-};
+}
 
 function renderAssignment(){
   const A=pendingAssignment; if(!A) return;
@@ -372,15 +380,15 @@ function renderAssignment(){
     const list=A.teams[slot];
     const rows=list.map((m,i)=>`<tr>
       <td>${i+1}</td>
-      <td>${esc(m.name)} ${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${m.avail==='both'?'<span class="badge b-both">both</span>':''}</td>
+      <td>${esc(m.name)} ${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
       <td><span class="badge ${i<A.starters?'b-start':'b-sub'}" style="cursor:pointer" onclick="toggleStarter('${slot}',${i})">${i<A.starters?'STARTER':'SUB'}</span></td>
-      <td><button class="mini" onclick="dropMember('${slot}',${i})">↓ drop</button></td>
+      <td><button class="mini" onclick="dropMember('${slot}',${i})">↓ drop</button> <button class="mini" title="Remove from event entirely" onclick="removeMember('${slot}',${i})">✕</button></td>
     </tr>`).join('');
     return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}</h3>
       <table><tr><th>#</th><th>Player</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=4 class=muted>empty</td></tr>'}</table></div>`;
   };
-  const wl=A.waitlist.map((m,i)=>`<tr><td>${i+1}</td><td>${esc(m.name)} ${availBadge(m.avail)}</td>
-    <td><button class="mini" onclick="promote(${i})">↑ promote</button></td></tr>`).join('');
+  const wl=A.waitlist.map((m,i)=>`<tr><td>${i+1}</td><td>${esc(m.name)} ${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
+    <td><button class="mini" onclick="promote(${i})">↑ promote</button> <button class="mini" title="Remove from event entirely" onclick="removeWait(${i})">✕</button></td></tr>`).join('');
   const bn=A.banned.map(b=>`<li>${esc(b.name)} — banned until ${b.until}</li>`).join('');
   document.getElementById('assignResult').innerHTML=`
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
@@ -396,6 +404,16 @@ function hideSaveButtons(){ ['btnSaveEvent','btnExportTeams','btnCopyTeams'].for
 window.dropMember=(slot,i)=>{
   const m=pendingAssignment.teams[slot].splice(i,1)[0];
   pendingAssignment.waitlist.unshift(m); renderAssignment();
+};
+window.removeMember=(slot,i)=>{
+  const m=pendingAssignment.teams[slot].splice(i,1)[0];
+  apps=apps.filter(a=>norm(a.name)!==norm(m.name));
+  renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
+};
+window.removeWait=i=>{
+  const m=pendingAssignment.waitlist.splice(i,1)[0];
+  apps=apps.filter(a=>norm(a.name)!==norm(m.name));
+  renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
 };
 window.promote=i=>{
   const A=pendingAssignment, m=A.waitlist[i];
