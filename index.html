@@ -193,6 +193,7 @@ function migrate(d){
     const p=d.players[k];
     p.aliases=p.aliases||[];
     if(!p.banUntil||typeof p.banUntil==='string') p.banUntil={desert:p.banUntil||null,canyon:p.banUntil||null};
+    p.lastApplied=p.lastApplied||{desert:null,canyon:null};
   }
   d.settings=d.settings||{banDays:14};
   return d;
@@ -215,7 +216,7 @@ function resolveKey(name){
 }
 function getPlayer(name){
   let k=resolveKey(name);
-  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},aliases:[],notes:''}; }
+  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},lastApplied:{desert:null,canyon:null},aliases:[],notes:''}; }
   return db.players[k];
 }
 function renamePlayer(oldKey,newName){
@@ -244,9 +245,11 @@ function mergePlayers(targetKey,sourceKey){
   t.guaranteed = t.guaranteed || s.guaranteed;
   t.selections += s.selections;
   t.noShows += s.noShows;
+  t.lastApplied=t.lastApplied||{desert:null,canyon:null}; s.lastApplied=s.lastApplied||{desert:null,canyon:null};
   for(const m of ['desert','canyon']){
     if(s.lastSelected[m] && (!t.lastSelected[m]||t.lastSelected[m]<s.lastSelected[m])) t.lastSelected[m]=s.lastSelected[m];
     if(s.banUntil[m] && (!t.banUntil[m]||t.banUntil[m]<s.banUntil[m])) t.banUntil[m]=s.banUntil[m];
+    if(s.lastApplied[m] && (!t.lastApplied[m]||t.lastApplied[m]<s.lastApplied[m])) t.lastApplied[m]=s.lastApplied[m];
   }
   // duplicate's name + its aliases become aliases of the kept player
   t.aliases=t.aliases||[];
@@ -402,30 +405,43 @@ function runAssign(){
 function renderAssignment(){
   const A=pendingAssignment; if(!A) return;
   A.waitlist.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
+  const history=name=>{
+    const p=getPlayer(name), la=(p.lastApplied||{})[A.mode];
+    return `<span class="muted" style="font-size:11px">picked ${fmtDate(p.lastSelected[A.mode])} · applied ${fmtDate(la)}</span>`;
+  };
+  const banBadge=name=>{
+    const p=getPlayer(name);
+    return isBanned(p,A.mode,A.date)?`<span class="badge b-ban">BANNED until ${p.banUntil[A.mode]}</span> `:'';
+  };
   const teamHtml=(slot,label)=>{
     const list=A.teams[slot];
     const rows=list.map((m,i)=>`<tr>
       <td>${i+1}</td>
-      <td>${esc(m.name)} ${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
+      <td>${esc(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
+      <td>${history(m.name)}</td>
       <td><span class="badge ${i<A.starters?'b-start':'b-sub'}" style="cursor:pointer" onclick="toggleStarter('${slot}',${i})">${i<A.starters?'STARTER':'SUB'}</span></td>
       <td><button class="mini" onclick="dropMember('${slot}',${i})">↓ drop</button> <button class="mini" title="Remove from event entirely" onclick="removeMember('${slot}',${i})">✕</button></td>
     </tr>`).join('');
     return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}</h3>
-      <table><tr><th>#</th><th>Player</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=4 class=muted>empty</td></tr>'}</table></div>`;
+      <table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
   };
   const wl=A.waitlist.map((m,i)=>{
+    const banned=isBanned(getPlayer(m.name),A.mode,A.date);
     const btns=[];
-    if(m.avail!=='evening') btns.push(`<button class="mini" onclick="promoteTo(${i},'noon')">→ ☀️ Noon</button>`);
-    if(m.avail!=='noon') btns.push(`<button class="mini" onclick="promoteTo(${i},'evening')">→ 🌙 Evening</button>`);
+    if(!banned){
+      if(m.avail!=='evening') btns.push(`<button class="mini" onclick="promoteTo(${i},'noon')">→ ☀️ Noon</button>`);
+      if(m.avail!=='noon') btns.push(`<button class="mini" onclick="promoteTo(${i},'evening')">→ 🌙 Evening</button>`);
+    }
     btns.push(`<button class="mini" title="Remove from event entirely" onclick="removeWait(${i})">✕</button>`);
-    return `<tr><td>${i+1}</td><td>${esc(m.name)} ${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
+    return `<tr><td>${i+1}</td><td>${esc(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
+    <td>${history(m.name)}</td>
     <td>${btns.join(' ')}</td></tr>`;
   }).join('');
-  const bn=A.banned.map(b=>`<li>${esc(b.name)} — banned until ${b.until}</li>`).join('');
+  const bn=A.banned.map(b=>`<li>${esc(b.name)} — banned until ${b.until} &nbsp; ${history(b.name)}</li>`).join('');
   document.getElementById('assignResult').innerHTML=`
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
-    ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th><th></th></tr>${wl}</table>`:''}
-    ${A.banned.length?`<h3 style="color:var(--red)">Excluded — no-show ban</h3><ul class="muted">${bn}</ul>`:''}
+    ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th></th></tr>${wl}</table>`:''}
+    ${A.banned.length?`<h3 style="color:var(--red)">Excluded — no-show ban (cannot be added)</h3><ul class="muted">${bn}</ul>`:''}
     <p class="help">Role order follows selection priority; click a STARTER/SUB badge to reorder manually. Nothing is recorded until you confirm.</p>`;
   document.getElementById('btnSaveEvent').style.display='';
   document.getElementById('btnExportTeams').style.display='';
@@ -449,6 +465,8 @@ window.removeWait=i=>{
 };
 window.promoteTo=(i,slot)=>{
   const A=pendingAssignment, m=A.waitlist[i];
+  const p=getPlayer(m.name);
+  if(isBanned(p,A.mode,A.date)){ toast(`${m.name} is banned from ${MODES[A.mode]} until ${p.banUntil[A.mode]} — cannot be added`,'err'); renderAssignment(); return; }
   if(A.teams[slot].length>=A.teamSize){ toast(`${slot==='noon'?'Noon':'Evening'} team is full (${A.teamSize}) — drop someone first`,'err'); return; }
   A.waitlist.splice(i,1); A.teams[slot].push(m); renderAssignment();
   toast(`${m.name} added to ${slot==='noon'?'☀️ Noon':'🌙 Evening'}`);
@@ -470,6 +488,11 @@ document.getElementById('btnSaveEvent').onclick=()=>{
     waitlist:A.waitlist.map(m=>m.name)};
   for(const slot of ['noon','evening']) for(const m of ev.teams[slot]){
     const p=getPlayer(m.name); p.selections++; p.lastSelected[A.mode]=A.date;
+  }
+  // every applicant (selected, waitlisted or banned) gets their application recorded
+  for(const name of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...A.waitlist.map(m=>m.name),...A.banned.map(b=>b.name)]){
+    const p=getPlayer(name); p.lastApplied=p.lastApplied||{desert:null,canyon:null};
+    if(!p.lastApplied[A.mode]||p.lastApplied[A.mode]<A.date) p.lastApplied[A.mode]=A.date;
   }
   db.events.push(ev); db.events.sort((a,b)=>a.date<b.date?1:-1); save();
   toast('Event saved — selections recorded for fairness tracking');
