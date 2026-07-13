@@ -136,7 +136,7 @@
       <button class="btn" id="btnAddPlayer">Add</button>
       <input type="text" id="rosterSearch" placeholder="🔍 Search…" style="margin-left:auto">
     </div>
-    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 14 days from the event date. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically.</p>
+    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 14 days from the event date. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically. If the same person ended up as two roster entries (typo, different spelling), use 🔗 to merge the duplicate into the real one — histories are combined and the duplicate name becomes an alias.</p>
     <div id="rosterTable"></div>
   </div>
 </section>
@@ -234,6 +234,31 @@ function renamePlayer(oldKey,newName){
     for(const slot of ['noon','evening']) for(const m of ev.teams[slot]) if(norm(m.name)===norm(oldName)||p.aliases.includes(norm(m.name))) m.name=newName;
     ev.waitlist=ev.waitlist.map(n=>(norm(n)===norm(oldName)||p.aliases.includes(norm(n)))?newName:n);
   }
+  save(); return null;
+}
+function mergePlayers(targetKey,sourceKey){
+  if(targetKey===sourceKey) return 'Cannot merge a player with themselves';
+  const t=db.players[targetKey], s=db.players[sourceKey];
+  if(!t||!s) return 'Player not found';
+  // combine history
+  t.guaranteed = t.guaranteed || s.guaranteed;
+  t.selections += s.selections;
+  t.noShows += s.noShows;
+  for(const m of ['desert','canyon']){
+    if(s.lastSelected[m] && (!t.lastSelected[m]||t.lastSelected[m]<s.lastSelected[m])) t.lastSelected[m]=s.lastSelected[m];
+    if(s.banUntil[m] && (!t.banUntil[m]||t.banUntil[m]<s.banUntil[m])) t.banUntil[m]=s.banUntil[m];
+  }
+  // duplicate's name + its aliases become aliases of the kept player
+  t.aliases=t.aliases||[];
+  for(const a of [norm(s.name),...(s.aliases||[])])
+    if(a!==norm(t.name) && !t.aliases.includes(a)) t.aliases.push(a);
+  // rewrite the duplicate's name in saved events so history reads under one name
+  const rewrite=new Set([norm(s.name),...(s.aliases||[])]);
+  for(const ev of db.events){
+    for(const slot of ['noon','evening']) for(const m of ev.teams[slot]) if(rewrite.has(norm(m.name))) m.name=t.name;
+    ev.waitlist=ev.waitlist.map(n=>rewrite.has(norm(n))?t.name:n);
+  }
+  delete db.players[sourceKey];
   save(); return null;
 }
 function isBanned(p,mode,dateStr){ return p.banUntil[mode] && dateStr < p.banUntil[mode]; }
@@ -493,7 +518,7 @@ function renderRoster(){
     const k=norm(p.name);
     const aka=(p.aliases||[]).length?`<div class="muted" style="font-size:11px">formerly: ${p.aliases.map(esc).join(', ')}</div>`:'';
     return `<tr>
-      <td>${esc(p.name)} <button class="mini" title="Rename (keeps history)" onclick="uiRename('${k}')">✏️</button>${aka}</td>
+      <td>${esc(p.name)} <button class="mini" title="Rename (keeps history)" onclick="uiRename('${k}')">✏️</button> <button class="mini" title="Merge a duplicate player into this one" onclick="uiMerge('${k}')">🔗</button>${aka}</td>
       <td><input type="checkbox" ${p.guaranteed?'checked':''} onchange="setGuar('${k}',this.checked)"></td>
       <td>${p.selections}</td>
       <td class="muted">${fmtDate(p.lastSelected.desert)}</td>
@@ -515,6 +540,19 @@ window.uiRename=k=>{
   const err=renamePlayer(k,nn);
   if(err){ toast(err,'err'); return; }
   renderRoster(); toast(`Renamed to ${nn.trim()} — history kept`);
+};
+window.uiMerge=k=>{
+  const t=db.players[k];
+  const nn=prompt(`Merge a duplicate into ${t.name}?\n\nType the duplicate's name. Its history (times picked, no-shows, bans, fairness dates) will be combined into ${t.name}, and the duplicate's name becomes a former name so future applications under it still match.`);
+  if(!nn||!nn.trim()) return;
+  const sk=resolveKey(nn);
+  if(!sk){ toast(`No player called "${nn.trim()}" found`,'err'); return; }
+  if(sk===k){ toast('That is the same player','err'); return; }
+  const s=db.players[sk];
+  if(!confirm(`Merge ${s.name} into ${t.name}?\n\n${t.name} keeps the combined history and gains "${s.name}" as a former name. ${s.name}'s roster entry is removed. This cannot be undone — export a JSON backup first if unsure.`)) return;
+  const err=mergePlayers(k,sk);
+  if(err){ toast(err,'err'); return; }
+  renderRoster(); toast(`${s.name} merged into ${t.name}`);
 };
 window.clearBan=(k,mode)=>{ db.players[k].banUntil[mode]=null; save(); renderRoster(); toast(`${mode==='desert'?'Desert Storm':'Canyon Storm'} ban cleared`); };
 window.delPlayer=k=>{ if(confirm(`Remove ${db.players[k].name} from the roster? History stays in past events.`)){ delete db.players[k]; save(); renderRoster(); } };
