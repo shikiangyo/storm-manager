@@ -45,6 +45,8 @@
   .b-start{background:#16352a;color:var(--green)}
   .b-sub{background:#33301a;color:#d9c86a}
   .b-wait{background:#2a2f3a;color:var(--muted)}
+  .m-desert{background:#3a2f10;color:var(--accent)}
+  .m-canyon{background:#12253a;color:var(--accent2)}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
   @media(max-width:900px){.grid2{grid-template-columns:1fr}}
   .muted{color:var(--muted)}
@@ -98,7 +100,7 @@
 
   <div class="panel">
     <h2>2 · Add applications</h2>
-    <p class="help">Import a CSV with columns <code>name, availability</code> (availability = <code>noon</code>, <code>evening</code>, or <code>both</code>), or paste lines like <code>PlayerName, both</code>. Names not in the roster are added automatically as non-guaranteed. <b>Applicants are placed into teams below immediately</b> — each name appears once, in a team, on the waitlist, or in the banned list. If teams are already formed, you'll be asked whether late additions re-shuffle everyone or just join the waitlist.</p>
+    <p class="help">Import a CSV with columns <code>name, availability</code>, or paste lines like <code>PlayerName, both</code>. Availability must be exactly <code>noon</code>, <code>evening</code>, or <code>both</code> — anything else (typos, blanks) goes to a review list for you to fix. Names not in the roster are added automatically as non-guaranteed. <b>Applicants are placed into teams below immediately</b> — each name appears once, in a team, on the waitlist, or in the banned list. If teams are already formed, you'll be asked whether late additions re-shuffle everyone or just join the waitlist.</p>
     <div class="row">
       <input type="file" id="csvFile" accept=".csv,.txt">
       <button class="btn ghost" id="btnClearApps">Clear applications</button>
@@ -108,10 +110,11 @@
       <button class="btn" id="btnParsePaste">Add pasted lines</button>
       <span class="muted" id="appCount"></span>
     </div>
+    <div id="reviewList"></div>
   </div>
 
   <div class="panel">
-    <h2>3 · Teams</h2>
+    <h2>3 · Teams <span id="modeChip"></span></h2>
     <p class="help">Selection order: <b>guaranteed players first</b>, then everyone else by <b>longest time since last selection</b> for this mode (never-selected players first; ties broken randomly). Players banned for a recent no-show <b>in this mode</b> are excluded (Desert and Canyon bans are separate). Availability only decides <i>which</i> team you join, never <i>whether</i> you get in — noon-only and both-slot applicants have equal odds. Edits are manual: ↓ drops to waitlist, ↑ promotes, ✕ removes from the event — nothing reshuffles on its own. To change someone's availability, remove them and re-add with the new slot.</p>
     <div class="row">
       <button class="btn gold" id="btnAssign">⟳ Re-assign teams</button>
@@ -149,6 +152,11 @@
     <div id="eventList"></div>
   </div>
   <div class="panel" id="attendancePanel" style="display:none"></div>
+  <div class="panel">
+    <h2>History grid</h2>
+    <p class="help">Rows = players, columns = event dates. <span class="badge b-start">STA</span> started · <span class="badge b-sub">SUB</span> substitute · <span class="badge b-ban">NP</span> no-show · — not in that event.</p>
+    <div id="gridArea"></div>
+  </div>
 </section>
 
 <!-- ============ SETTINGS TAB ============ -->
@@ -173,7 +181,7 @@
       2. Guaranteed applicants fill spots first. If more guaranteed players apply than there are spots, the least-recently-picked among them win.<br>
       3. Remaining spots go to non-guaranteed applicants ordered by longest time since last selection <i>in that mode</i>. Never-selected players come first. Ties are broken randomly.<br>
       4. Noon-only players go to the Noon team, evening-only to Evening, and "both" players fill whichever team has more space — availability never changes your odds of getting in.<br>
-      5. Within each team, spots fill in selection order: the first N picked become starters, the rest substitutes. You can toggle these before saving.<br>
+      5. Within each team, starters are chosen by: guaranteed players first, then longest time since last STARTED in that mode (never-started first, ties random). The rest are substitutes. You can toggle roles before saving.<br>
       6. Unselected applicants form a ranked waitlist for drop-out replacements.
     </p>
   </div>
@@ -194,6 +202,7 @@ function migrate(d){
     p.aliases=p.aliases||[];
     if(!p.banUntil||typeof p.banUntil==='string') p.banUntil={desert:p.banUntil||null,canyon:p.banUntil||null};
     p.lastApplied=p.lastApplied||{desert:null,canyon:null};
+    p.lastStarted=p.lastStarted||{desert:null,canyon:null};
   }
   d.settings=d.settings||{banDays:14};
   return d;
@@ -216,7 +225,7 @@ function resolveKey(name){
 }
 function getPlayer(name){
   let k=resolveKey(name);
-  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},lastApplied:{desert:null,canyon:null},aliases:[],notes:''}; }
+  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},lastApplied:{desert:null,canyon:null},lastStarted:{desert:null,canyon:null},aliases:[],notes:''}; }
   return db.players[k];
 }
 function renamePlayer(oldKey,newName){
@@ -246,10 +255,12 @@ function mergePlayers(targetKey,sourceKey){
   t.selections += s.selections;
   t.noShows += s.noShows;
   t.lastApplied=t.lastApplied||{desert:null,canyon:null}; s.lastApplied=s.lastApplied||{desert:null,canyon:null};
+  t.lastStarted=t.lastStarted||{desert:null,canyon:null}; s.lastStarted=s.lastStarted||{desert:null,canyon:null};
   for(const m of ['desert','canyon']){
     if(s.lastSelected[m] && (!t.lastSelected[m]||t.lastSelected[m]<s.lastSelected[m])) t.lastSelected[m]=s.lastSelected[m];
     if(s.banUntil[m] && (!t.banUntil[m]||t.banUntil[m]<s.banUntil[m])) t.banUntil[m]=s.banUntil[m];
     if(s.lastApplied[m] && (!t.lastApplied[m]||t.lastApplied[m]<s.lastApplied[m])) t.lastApplied[m]=s.lastApplied[m];
+    if(s.lastStarted[m] && (!t.lastStarted[m]||t.lastStarted[m]<s.lastStarted[m])) t.lastStarted[m]=s.lastStarted[m];
   }
   // duplicate's name + its aliases become aliases of the kept player
   t.aliases=t.aliases||[];
@@ -281,18 +292,20 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
 
 /* ================= applications ================= */
 let apps=[]; // {name, avail:'noon'|'evening'|'both'}
+let review=[]; // {name, raw} — applications with unrecognised availability
 let pendingAssignment=null;
 
 document.getElementById('evDate').value = new Date().toISOString().slice(0,10);
 
 function parseAvail(s){
   s=norm(s||'');
-  if(/^n|midi|12/.test(s)) return 'noon';
-  if(/^e|^v|soir|pm|night/.test(s)) return 'evening';
-  return 'both';
+  if(s==='noon') return 'noon';
+  if(s==='evening') return 'evening';
+  if(s==='both') return 'both';
+  return null; // anything else must be reviewed by an officer
 }
 function addApps(lines){
-  let added=0,dupes=0; const fresh=[];
+  let added=0,dupes=0,reviewed=0; const fresh=[];
   for(const line of lines){
     const parts=line.split(/[,;\t]/).map(x=>x.trim()).filter(Boolean);
     if(!parts.length) continue;
@@ -301,19 +314,45 @@ function addApps(lines){
     const avail=parseAvail(parts[1]);
     const p=getPlayer(name); // resolves former names to the current player
     if(apps.some(a=>norm(a.name)===norm(p.name))){dupes++;continue;}
+    if(avail===null){
+      if(!review.some(r=>norm(r.name)===norm(p.name))){ review.push({name:p.name,raw:parts[1]||'(blank)'}); reviewed++; }
+      continue;
+    }
+    review=review.filter(r=>norm(r.name)!==norm(p.name)); // valid value supersedes review entry
     const app={name:p.name,avail}; apps.push(app); fresh.push(app); added++;
   }
-  save(); renderApps();
-  if(!added){ toast(dupes?`No new names — ${dupes} duplicate${dupes===1?'':'s'} skipped`:'No applications found','err'); return; }
+  save(); renderApps(); renderReview();
+  const revMsg=reviewed?` · ${reviewed} need${reviewed===1?'s':''} review`:'';
+  if(!added){
+    toast(reviewed?`${reviewed} name${reviewed===1?'':'s'} need review — set noon/evening/both below`:(dupes?`No new names — ${dupes} duplicate${dupes===1?'':'s'} skipped`:'No applications found'),'err');
+    return;
+  }
   if(!pendingAssignment){
     runAssign();
-    toast(`${added} applicant${added===1?'':'s'} added and assigned`+(dupes?` (${dupes} duplicates skipped)`:''));
+    toast(`${added} applicant${added===1?'':'s'} added and assigned`+(dupes?` (${dupes} duplicates skipped)`:'')+revMsg);
   } else if(confirm(`Teams are already formed. ${added} new applicant${added===1?'':'s'} added.\n\nOK — re-assign EVERYONE fairly with the new names included (manual edits are lost)\nCancel — keep current teams and put the new name${added===1?'':'s'} on the waitlist`)){
-    runAssign(); toast('Teams re-assigned with new applicants included');
+    runAssign(); toast('Teams re-assigned with new applicants included'+revMsg);
   } else {
-    lateWaitlist(fresh); toast(`${added} late applicant${added===1?'':'s'} added to the waitlist`);
+    lateWaitlist(fresh); toast(`${added} late applicant${added===1?'':'s'} added to the waitlist`+revMsg);
   }
 }
+function renderReview(){
+  const el=document.getElementById('reviewList');
+  if(!review.length){ el.innerHTML=''; return; }
+  el.innerHTML=`<h3 style="color:var(--red)">⚠ Needs review — availability not recognised (must be noon, evening or both)</h3>
+    <table><tr><th>Player</th><th>They wrote</th><th>Set availability</th><th></th></tr>`+
+    review.map((r,i)=>`<tr><td>${esc(r.name)}</td><td class="muted">${esc(r.raw)}</td>
+      <td><select id="rev-${i}"><option value="">choose…</option><option value="noon">noon</option><option value="evening">evening</option><option value="both">both</option></select>
+      <button class="mini" onclick="resolveReview(${i})">Add to event</button></td>
+      <td><button class="mini" title="Discard this application" onclick="removeReview(${i})">✕</button></td></tr>`).join('')+'</table>';
+}
+window.resolveReview=i=>{
+  const v=document.getElementById('rev-'+i).value;
+  if(!v){ toast('Pick noon, evening or both first','err'); return; }
+  const r=review.splice(i,1)[0]; renderReview();
+  addApps([`${r.name}, ${v}`]);
+};
+window.removeReview=i=>{ review.splice(i,1); renderReview(); };
 function lateWaitlist(fresh){
   const A=pendingAssignment;
   const rank=n=>getPlayer(n).lastSelected[A.mode]||'0000-00-00';
@@ -336,7 +375,7 @@ document.getElementById('btnParsePaste').onclick=()=>{
   const box=document.getElementById('pasteBox');
   addApps(box.value.split(/\r?\n/)); box.value='';
 };
-document.getElementById('btnClearApps').onclick=()=>{ apps=[]; pendingAssignment=null; renderApps(); document.getElementById('assignResult').innerHTML=''; hideSaveButtons(); };
+document.getElementById('btnClearApps').onclick=()=>{ apps=[]; review=[]; pendingAssignment=null; renderApps(); renderReview(); document.getElementById('assignResult').innerHTML=''; hideSaveButtons(); };
 
 function availBadge(a){ return a==='noon'?'<span class="badge b-noon">noon</span>':a==='evening'?'<span class="badge b-eve">evening</span>':'<span class="badge b-both">both</span>'; }
 
@@ -347,7 +386,7 @@ function renderApps(){
 }
 // mode/date/size changes invalidate bans & fairness, so re-run assignment
 function reassignOnChange(){ if(apps.length) runAssign(); }
-document.getElementById('evMode').onchange=reassignOnChange;
+document.getElementById('evMode').onchange=()=>{ updateModeChip(); reassignOnChange(); };
 document.getElementById('evDate').onchange=reassignOnChange;
 document.getElementById('evTeamSize').onchange=reassignOnChange;
 document.getElementById('evStarters').onchange=reassignOnChange;
@@ -398,6 +437,11 @@ function runAssign(){
     if(t) teams[t].push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
     else waitlist.push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
   }
+  // starter order within each team: guaranteed first, then longest since last
+  // START in this mode (never-started first); ties random via pre-shuffle
+  const startRank=m=>(getPlayer(m.name).lastStarted||{})[mode]||'0000-00-00';
+  for(const s of ['noon','evening'])
+    teams[s]=shuffle(teams[s]).sort((a,b)=>(b.guaranteed-a.guaranteed)||(startRank(a)<startRank(b)?-1:startRank(a)>startRank(b)?1:0));
   pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]}))};
   renderAssignment();
 }
@@ -442,7 +486,7 @@ function renderAssignment(){
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
     ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th></th></tr>${wl}</table>`:''}
     ${A.banned.length?`<h3 style="color:var(--red)">Excluded — no-show ban (cannot be added)</h3><ul class="muted">${bn}</ul>`:''}
-    <p class="help">Role order follows selection priority; click a STARTER/SUB badge to reorder manually. Nothing is recorded until you confirm.</p>`;
+    <p class="help">Starters: guaranteed first, then longest since last started in this mode. Click a STARTER/SUB badge to change roles manually. Nothing is recorded until you confirm.</p>`;
   document.getElementById('btnSaveEvent').style.display='';
   document.getElementById('btnExportTeams').style.display='';
   document.getElementById('btnCopyTeams').style.display='';
@@ -486,9 +530,11 @@ document.getElementById('btnSaveEvent').onclick=()=>{
     teams:{noon:A.teams.noon.map((m,i)=>({name:m.name,role:i<A.starters?'starter':'sub',attended:null})),
            evening:A.teams.evening.map((m,i)=>({name:m.name,role:i<A.starters?'starter':'sub',attended:null}))},
     waitlist:A.waitlist.map(m=>m.name)};
-  for(const slot of ['noon','evening']) for(const m of ev.teams[slot]){
+  for(const slot of ['noon','evening']) ev.teams[slot].forEach((m,i)=>{
     const p=getPlayer(m.name); p.selections++; p.lastSelected[A.mode]=A.date;
-  }
+    p.lastStarted=p.lastStarted||{desert:null,canyon:null};
+    if(m.role==='starter' && (!p.lastStarted[A.mode]||p.lastStarted[A.mode]<A.date)) p.lastStarted[A.mode]=A.date;
+  });
   // every applicant (selected, waitlisted or banned) gets their application recorded
   for(const name of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...A.waitlist.map(m=>m.name),...A.banned.map(b=>b.name)]){
     const p=getPlayer(name); p.lastApplied=p.lastApplied||{desert:null,canyon:null};
@@ -588,18 +634,27 @@ document.getElementById('btnAddPlayer').onclick=()=>{
 document.getElementById('rosterSearch').oninput=renderRoster;
 
 /* ================= history / attendance ================= */
+const modeChipHtml=m=>`<span class="badge ${m==='desert'?'m-desert':'m-canyon'}">${m==='desert'?'🏜️ Desert Storm':'🏞️ Canyon Storm'}</span>`;
 function renderEvents(){
-  const list=db.events.map(ev=>{
-    const total=ev.teams.noon.length+ev.teams.evening.length;
-    const pending=[...ev.teams.noon,...ev.teams.evening].some(m=>m.attended===null);
-    const ns=[...ev.teams.noon,...ev.teams.evening].filter(m=>m.attended===false).length;
-    return `<tr>
-      <td><b>${MODES[ev.mode]}</b></td><td>${ev.date}</td><td>${total} players</td>
-      <td>${pending?'<span class="badge b-wait">attendance pending</span>':ns?`<span class="badge b-ban">${ns} no-show${ns>1?'s':''}</span>`:'<span class="badge b-start">all attended</span>'}</td>
-      <td><button class="mini" onclick="openEvent(${ev.id})">Open</button> <button class="mini" onclick="delEvent(${ev.id})">🗑</button></td>
-    </tr>`;
-  }).join('');
-  document.getElementById('eventList').innerHTML=db.events.length?`<table><tr><th>Mode</th><th>Date</th><th>Size</th><th>Status</th><th></th></tr>${list}</table>`:'<p class="muted">No events yet.</p>';
+  let html='';
+  for(const mode of ['desert','canyon']){
+    const evs=db.events.filter(e=>e.mode===mode);
+    if(!evs.length) continue;
+    const list=evs.map(ev=>{
+      const total=ev.teams.noon.length+ev.teams.evening.length;
+      const pending=[...ev.teams.noon,...ev.teams.evening].some(m=>m.attended===null);
+      const ns=[...ev.teams.noon,...ev.teams.evening].filter(m=>m.attended===false).length;
+      return `<tr>
+        <td>${ev.date} ${ev.locked?'🔒':''}</td><td>${total} players</td>
+        <td>${pending?'<span class="badge b-wait">attendance pending</span>':ns?`<span class="badge b-ban">${ns} no-show${ns>1?'s':''}</span>`:'<span class="badge b-start">all attended</span>'}</td>
+        <td><button class="mini" onclick="openEvent(${ev.id})">${ev.locked?'View':'Open'}</button> <button class="mini" onclick="delEvent(${ev.id})">🗑</button></td>
+      </tr>`;
+    }).join('');
+    html+=`<h3 style="color:${mode==='desert'?'var(--accent)':'var(--accent2)'}">${mode==='desert'?'🏜️ Desert Storm':'🏞️ Canyon Storm'}</h3>
+      <table><tr><th>Date</th><th>Size</th><th>Status</th><th></th></tr>${list}</table>`;
+  }
+  document.getElementById('eventList').innerHTML=html||'<p class="muted">No events yet.</p>';
+  renderGrid();
 }
 window.delEvent=id=>{
   if(!confirm('Delete this event? (Does not undo bans or selection history)'))return;
@@ -608,24 +663,33 @@ window.delEvent=id=>{
 };
 window.openEvent=id=>{
   const ev=db.events.find(e=>e.id===id); if(!ev)return;
+  const ro=!!ev.locked;
   const teamRows=(slot,label)=>{
     const rows=ev.teams[slot].map((m,i)=>`<tr>
       <td>${esc(m.name)}</td><td><span class="badge ${m.role==='starter'?'b-start':'b-sub'}">${m.role}</span></td>
-      <td>
-        <label style="margin-right:10px"><input type="radio" name="att-${slot}-${i}" ${m.attended===true?'checked':''} onchange="markAtt(${id},'${slot}',${i},true)"> showed</label>
-        <label><input type="radio" name="att-${slot}-${i}" ${m.attended===false?'checked':''} onchange="markAtt(${id},'${slot}',${i},false)"> no-show</label>
+      <td>${ro
+        ? (m.attended===false?'<span class="badge b-ban">no-show</span>':'<span class="badge b-start">showed</span>')
+        : `<label style="margin-right:10px"><input type="radio" name="att-${slot}-${i}" ${m.attended===true?'checked':''} onchange="markAtt(${id},'${slot}',${i},true)"> showed</label>
+           <label><input type="radio" name="att-${slot}-${i}" ${m.attended===false?'checked':''} onchange="markAtt(${id},'${slot}',${i},false)"> no-show</label>`}
       </td></tr>`).join('');
     return `<div class="team-col"><h3>${label}</h3><table><tr><th>Player</th><th>Role</th><th>Attendance</th></tr>${rows||'<tr><td colspan=3 class=muted>empty</td></tr>'}</table></div>`;
   };
   document.getElementById('attendancePanel').style.display='';
   document.getElementById('attendancePanel').innerHTML=`
-    <h2>${MODES[ev.mode]} — ${ev.date}</h2>
+    <h2>${modeChipHtml(ev.mode)} ${ev.date} ${ro?'🔒':''}</h2>
     <div class="row">
-      <button class="btn ok" onclick="markAll(${id},true)">Mark all as showed</button>
-      <button class="btn gold" onclick="applyBans(${id})">💾 Save attendance &amp; apply bans</button>
+      ${ro
+        ? `<span class="muted">Attendance saved and locked to prevent accidental edits.</span> <button class="btn ghost" onclick="unlockEvent(${id})">🔓 Unlock to edit</button>`
+        : `<button class="btn ok" onclick="markAll(${id},true)">Mark all as showed</button>
+           <button class="btn gold" onclick="applyBans(${id})">💾 Save attendance &amp; apply bans</button>`}
     </div>
     <div class="flexh">${teamRows('noon','☀️ Noon')}${teamRows('evening','🌙 Evening')}</div>
     ${ev.waitlist.length?`<p class="help">Waitlist was: ${ev.waitlist.map(esc).join(', ')}</p>`:''}`;
+};
+window.unlockEvent=id=>{
+  const ev=db.events.find(e=>e.id===id); if(!ev)return;
+  if(!confirm(`Unlock ${MODES[ev.mode]} ${ev.date} for editing?\n\nDouble-check this is the right event — there is no undo. Bans already applied are not reverted by editing.`)) return;
+  ev.locked=false; save(); renderEvents(); openEvent(id);
 };
 window.markAtt=(id,slot,i,val)=>{
   const ev=db.events.find(e=>e.id===id); ev.teams[slot][i].attended=val; save();
@@ -649,9 +713,53 @@ window.applyBans=id=>{
     }
     if(m.attended===null) m.attended=true; // default unmarked to showed
   }
-  save(); renderEvents(); openEvent(id);
-  toast(bans?`Saved — ${bans} player${bans>1?'s':''} banned for ${db.settings.banDays} days`:'Attendance saved');
+  ev.locked=true; // lock to prevent accidental edits of the wrong event
+  save(); renderEvents();
+  document.getElementById('attendancePanel').style.display='none';
+  toast(bans?`Saved & locked — ${bans} player${bans>1?'s':''} banned for ${db.settings.banDays} days`:'Attendance saved & locked');
 };
+
+/* ================= history grid ================= */
+function gridValue(ev,name){
+  for(const s of ['noon','evening']) for(const m of ev.teams[s]) if(norm(m.name)===norm(name)){
+    if(m.attended===false) return 'NP';
+    return m.role==='starter'?'STA':'SUB';
+  }
+  return '';
+}
+function gridData(mode){
+  const evs=db.events.filter(e=>e.mode===mode).sort((a,b)=>a.date<b.date?-1:1);
+  const players=new Set();
+  for(const ev of evs) for(const s of ['noon','evening']) for(const m of ev.teams[s]) players.add(m.name);
+  const names=[...players].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:'base'}));
+  return {evs,names};
+}
+function renderGrid(){
+  const area=document.getElementById('gridArea'); if(!area) return;
+  let html='';
+  for(const mode of ['desert','canyon']){
+    const {evs,names}=gridData(mode);
+    if(!evs.length) continue;
+    const badge=v=>v==='STA'?'<span class="badge b-start">STA</span>':v==='SUB'?'<span class="badge b-sub">SUB</span>':v==='NP'?'<span class="badge b-ban">NP</span>':'<span class="muted">—</span>';
+    html+=`<h3 style="color:${mode==='desert'?'var(--accent)':'var(--accent2)'}">${mode==='desert'?'🏜️ Desert Storm':'🏞️ Canyon Storm'} <button class="mini" onclick="exportGrid('${mode}')">⬇ Export grid CSV</button></h3>
+      <div style="overflow-x:auto"><table><tr><th>Player</th>${evs.map(e=>`<th>${e.date}</th>`).join('')}</tr>`+
+      names.map(n=>`<tr><td>${esc(n)}</td>${evs.map(ev=>`<td>${badge(gridValue(ev,n))}</td>`).join('')}</tr>`).join('')+'</table></div>';
+  }
+  area.innerHTML=html||'<p class="muted">No saved events yet — the grid builds itself as you run events.</p>';
+}
+window.exportGrid=mode=>{
+  const {evs,names}=gridData(mode);
+  let csv='player,'+evs.map(e=>e.date).join(',')+'\n';
+  for(const n of names) csv+=n+','+evs.map(ev=>gridValue(ev,n)).join(',')+'\n';
+  download(`${mode}-history-grid.csv`,csv,'text/csv');
+};
+
+/* ================= mode chip ================= */
+function updateModeChip(){
+  const el=document.getElementById('modeChip'); if(!el) return;
+  el.innerHTML=modeChipHtml(document.getElementById('evMode').value);
+}
+updateModeChip();
 
 /* ================= settings / data ================= */
 document.getElementById('btnSaveSettings').onclick=()=>{
