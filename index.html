@@ -100,7 +100,7 @@
 
   <div class="panel">
     <h2>2 · Add applications</h2>
-    <p class="help">Import a CSV with columns <code>name, availability</code>, or paste lines like <code>PlayerName, both</code>. Availability must be exactly <code>noon</code>, <code>evening</code>, or <code>both</code> — anything else (typos, blanks) goes to a review list for you to fix. Names not in the roster are added automatically as non-guaranteed. <b>Applicants are placed into teams below immediately</b> — each name appears once, in a team, on the waitlist, or in the banned list. If teams are already formed, you'll be asked whether late additions re-shuffle everyone or just join the waitlist.</p>
+    <p class="help">Import a CSV with columns <code>name, availability</code>, or paste lines like <code>PlayerName, both</code>. Availability must be exactly <code>noon</code>, <code>evening</code>, <code>both</code>, or <code>not available</code> — anything else (typos, blanks) goes to a review list for you to fix. "Not available" players are recorded as having voted but aren't placed in teams; roster players missing from the import entirely are marked "didn't vote" in the history grid. Names not in the roster are added automatically as non-guaranteed. <b>Applicants are placed into teams below immediately</b> — each name appears once, in a team, on the waitlist, or in the banned list. If teams are already formed, you'll be asked whether late additions re-shuffle everyone or just join the waitlist.</p>
     <div class="row">
       <input type="file" id="csvFile" accept=".csv,.txt">
       <button class="btn ghost" id="btnClearApps">Clear applications</button>
@@ -154,7 +154,7 @@
   <div class="panel" id="attendancePanel" style="display:none"></div>
   <div class="panel">
     <h2>History grid</h2>
-    <p class="help">Rows = players, columns = event dates. <span class="badge b-start">STA</span> started · <span class="badge b-sub">SUB</span> substitute · <span class="badge b-ban">NP</span> no-show · — not in that event.</p>
+    <p class="help">Rows = players, columns = event dates. <span class="badge b-start">STA</span> started · <span class="badge b-sub">SUB</span> substitute · <span class="badge b-ban">NP</span> picked but no-show · <span class="badge b-noon">WL</span> applied, not picked · <span class="badge b-eve">NA</span> voted not available · <span class="badge b-ban">BAN</span> applied while banned · <span class="badge b-wait">DNV</span> in roster, didn't vote · — not in roster yet.</p>
     <div id="gridArea"></div>
   </div>
 </section>
@@ -241,8 +241,9 @@ function renamePlayer(oldKey,newName){
   delete db.players[oldKey]; db.players[nk]=p;
   // update names in saved events so history reads correctly
   for(const ev of db.events){
-    for(const slot of ['noon','evening']) for(const m of ev.teams[slot]) if(norm(m.name)===norm(oldName)||p.aliases.includes(norm(m.name))) m.name=newName;
-    ev.waitlist=ev.waitlist.map(n=>(norm(n)===norm(oldName)||p.aliases.includes(norm(n)))?newName:n);
+    const match=n=>norm(n)===norm(oldName)||p.aliases.includes(norm(n));
+    for(const slot of ['noon','evening']) for(const m of ev.teams[slot]) if(match(m.name)) m.name=newName;
+    for(const key of ['waitlist','notAvailable','banned','roster']) if(ev[key]) ev[key]=ev[key].map(n=>match(n)?newName:n);
   }
   save(); return null;
 }
@@ -270,7 +271,7 @@ function mergePlayers(targetKey,sourceKey){
   const rewrite=new Set([norm(s.name),...(s.aliases||[])]);
   for(const ev of db.events){
     for(const slot of ['noon','evening']) for(const m of ev.teams[slot]) if(rewrite.has(norm(m.name))) m.name=t.name;
-    ev.waitlist=ev.waitlist.map(n=>rewrite.has(norm(n))?t.name:n);
+    for(const key of ['waitlist','notAvailable','banned','roster']) if(ev[key]) ev[key]=[...new Set(ev[key].map(n=>rewrite.has(norm(n))?t.name:n))];
   }
   delete db.players[sourceKey];
   save(); return null;
@@ -302,6 +303,7 @@ function parseAvail(s){
   if(s==='noon') return 'noon';
   if(s==='evening') return 'evening';
   if(s==='both') return 'both';
+  if(s==='not available'||s==='notavailable'||s==='n/a'||s==='na') return 'na';
   return null; // anything else must be reviewed by an officer
 }
 function addApps(lines){
@@ -342,7 +344,7 @@ function renderReview(){
   el.innerHTML=`<h3 style="color:var(--red)">⚠ Needs review — availability not recognised (must be noon, evening or both)</h3>
     <table><tr><th>Player</th><th>They wrote</th><th>Set availability</th><th></th></tr>`+
     review.map((r,i)=>`<tr><td>${esc(r.name)}</td><td class="muted">${esc(r.raw)}</td>
-      <td><select id="rev-${i}"><option value="">choose…</option><option value="noon">noon</option><option value="evening">evening</option><option value="both">both</option></select>
+      <td><select id="rev-${i}"><option value="">choose…</option><option value="noon">noon</option><option value="evening">evening</option><option value="both">both</option><option value="na">not available</option></select>
       <button class="mini" onclick="resolveReview(${i})">Add to event</button></td>
       <td><button class="mini" title="Discard this application" onclick="removeReview(${i})">✕</button></td></tr>`).join('')+'</table>';
 }
@@ -360,7 +362,8 @@ function lateWaitlist(fresh){
   fresh.sort((a,b)=>(getPlayer(b.name).guaranteed-getPlayer(a.name).guaranteed)||(rank(a.name)<rank(b.name)?-1:1));
   for(const a of fresh){
     const p=getPlayer(a.name);
-    if(isBanned(p,A.mode,A.date)) A.banned.push({name:p.name,until:p.banUntil[A.mode]});
+    if(a.avail==='na') A.notAvailable.push({name:p.name});
+    else if(isBanned(p,A.mode,A.date)) A.banned.push({name:p.name,until:p.banUntil[A.mode]});
     else A.waitlist.push({name:p.name,avail:a.avail,guaranteed:p.guaranteed});
   }
   renderAssignment();
@@ -377,12 +380,12 @@ document.getElementById('btnParsePaste').onclick=()=>{
 };
 document.getElementById('btnClearApps').onclick=()=>{ apps=[]; review=[]; pendingAssignment=null; renderApps(); renderReview(); document.getElementById('assignResult').innerHTML=''; hideSaveButtons(); };
 
-function availBadge(a){ return a==='noon'?'<span class="badge b-noon">noon</span>':a==='evening'?'<span class="badge b-eve">evening</span>':'<span class="badge b-both">both</span>'; }
+function availBadge(a){ return a==='noon'?'<span class="badge b-noon">noon</span>':a==='evening'?'<span class="badge b-eve">evening</span>':a==='na'?'<span class="badge b-wait">not available</span>':'<span class="badge b-both">both</span>'; }
 
 function renderApps(){
-  const c={noon:0,evening:0,both:0};
+  const c={noon:0,evening:0,both:0,na:0};
   for(const a of apps) c[a.avail]++;
-  document.getElementById('appCount').textContent=apps.length?`${apps.length} applicants — ${c.noon} noon · ${c.evening} evening · ${c.both} both`:'';
+  document.getElementById('appCount').textContent=apps.length?`${apps.length} applicants — ${c.noon} noon · ${c.evening} evening · ${c.both} both · ${c.na} not available`:'';
 }
 // mode/date/size changes invalidate bans & fairness, so re-run assignment
 function reassignOnChange(){ if(apps.length) runAssign(); }
@@ -405,9 +408,10 @@ function runAssign(){
   const date=document.getElementById('evDate').value;
   const teamSize=+document.getElementById('evTeamSize').value||30;
 
-  const banned=[], pool=[];
+  const banned=[], pool=[], notAvail=[];
   for(const a of apps){
     const p=getPlayer(a.name);
+    if(a.avail==='na'){ notAvail.push({name:p.name}); continue; }
     (isBanned(p,mode,date)?banned:pool).push({...a,p});
   }
   // selection order: guaranteed first, then by least-recently-picked; random tiebreak via pre-shuffle
@@ -442,7 +446,7 @@ function runAssign(){
   const startRank=m=>(getPlayer(m.name).lastStarted||{})[mode]||'0000-00-00';
   for(const s of ['noon','evening'])
     teams[s]=shuffle(teams[s]).sort((a,b)=>(b.guaranteed-a.guaranteed)||(startRank(a)<startRank(b)?-1:startRank(a)>startRank(b)?1:0));
-  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]}))};
+  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]}))};
   renderAssignment();
 }
 
@@ -482,9 +486,12 @@ function renderAssignment(){
     <td>${btns.join(' ')}</td></tr>`;
   }).join('');
   const bn=A.banned.map(b=>`<li>${esc(b.name)} — banned until ${b.until} &nbsp; ${history(b.name)}</li>`).join('');
+  A.notAvailable.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
+  const na=A.notAvailable.map((m,i)=>`<li>${esc(m.name)} &nbsp; ${history(m.name)} <button class="mini" title="Remove from event" onclick="removeNa(${i})">✕</button></li>`).join('');
   document.getElementById('assignResult').innerHTML=`
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
     ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th></th></tr>${wl}</table>`:''}
+    ${A.notAvailable.length?`<h3 style="color:var(--muted)">Voted — not available this week</h3><ul class="muted">${na}</ul>`:''}
     ${A.banned.length?`<h3 style="color:var(--red)">Excluded — no-show ban (cannot be added)</h3><ul class="muted">${bn}</ul>`:''}
     <p class="help">Starters: guaranteed first, then longest since last started in this mode. Click a STARTER/SUB badge to change roles manually. Nothing is recorded until you confirm.</p>`;
   document.getElementById('btnSaveEvent').style.display='';
@@ -504,6 +511,11 @@ window.removeMember=(slot,i)=>{
 };
 window.removeWait=i=>{
   const m=pendingAssignment.waitlist.splice(i,1)[0];
+  apps=apps.filter(a=>norm(a.name)!==norm(m.name));
+  renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
+};
+window.removeNa=i=>{
+  const m=pendingAssignment.notAvailable.splice(i,1)[0];
   apps=apps.filter(a=>norm(a.name)!==norm(m.name));
   renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
 };
@@ -529,14 +541,17 @@ document.getElementById('btnSaveEvent').onclick=()=>{
   const ev={id:Date.now(),mode:A.mode,date:A.date,starters:A.starters,
     teams:{noon:A.teams.noon.map((m,i)=>({name:m.name,role:i<A.starters?'starter':'sub',attended:null})),
            evening:A.teams.evening.map((m,i)=>({name:m.name,role:i<A.starters?'starter':'sub',attended:null}))},
-    waitlist:A.waitlist.map(m=>m.name)};
+    waitlist:A.waitlist.map(m=>m.name),
+    notAvailable:A.notAvailable.map(m=>m.name),
+    banned:A.banned.map(b=>b.name),
+    roster:Object.values(db.players).map(p=>p.name)}; // snapshot for "didn't vote"
   for(const slot of ['noon','evening']) ev.teams[slot].forEach((m,i)=>{
     const p=getPlayer(m.name); p.selections++; p.lastSelected[A.mode]=A.date;
     p.lastStarted=p.lastStarted||{desert:null,canyon:null};
     if(m.role==='starter' && (!p.lastStarted[A.mode]||p.lastStarted[A.mode]<A.date)) p.lastStarted[A.mode]=A.date;
   });
-  // every applicant (selected, waitlisted or banned) gets their application recorded
-  for(const name of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...A.waitlist.map(m=>m.name),...A.banned.map(b=>b.name)]){
+  // every applicant (selected, waitlisted, not-available or banned) gets their application recorded
+  for(const name of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...A.waitlist.map(m=>m.name),...A.notAvailable.map(m=>m.name),...A.banned.map(b=>b.name)]){
     const p=getPlayer(name); p.lastApplied=p.lastApplied||{desert:null,canyon:null};
     if(!p.lastApplied[A.mode]||p.lastApplied[A.mode]<A.date) p.lastApplied[A.mode]=A.date;
   }
@@ -559,6 +574,7 @@ document.getElementById('btnExportTeams').onclick=()=>{
     csv+=`${slot},${i<A.starters?'starter':'sub'},${m.name},${m.avail},${m.guaranteed?'yes':'no'}\n`;
   });
   A.waitlist.forEach(m=>csv+=`waitlist,,${m.name},${m.avail},${m.guaranteed?'yes':'no'}\n`);
+  A.notAvailable.forEach(m=>csv+=`not_available,,${m.name},not available,\n`);
   download(`${A.mode}-${A.date}-teams.csv`,csv,'text/csv');
 };
 document.getElementById('btnCopyTeams').onclick=()=>{
@@ -569,6 +585,7 @@ document.getElementById('btnCopyTeams').onclick=()=>{
     A.teams[slot].forEach((m,i)=>{ if(i===A.starters) txt+='Subs:\n'; txt+=`  ${i+1}. ${m.name}\n`; });
   }
   if(A.waitlist.length) txt+='\nWaitlist: '+A.waitlist.map(m=>m.name).join(', ')+'\n';
+  if(A.notAvailable.length) txt+='Not available: '+A.notAvailable.map(m=>m.name).join(', ')+'\n';
   navigator.clipboard.writeText(txt).then(()=>toast('Roster copied — paste into Discord/chat'));
 };
 
@@ -721,16 +738,25 @@ window.applyBans=id=>{
 
 /* ================= history grid ================= */
 function gridValue(ev,name){
+  const has=(arr)=>(arr||[]).some(n=>norm(n)===norm(name));
   for(const s of ['noon','evening']) for(const m of ev.teams[s]) if(norm(m.name)===norm(name)){
     if(m.attended===false) return 'NP';
     return m.role==='starter'?'STA':'SUB';
   }
-  return '';
+  if(has(ev.waitlist)) return 'WL';       // applied & available, not picked
+  if(has(ev.notAvailable)) return 'NA';   // voted, not available
+  if(has(ev.banned)) return 'BAN';        // applied but ban-excluded
+  const snapshot=ev.roster && ev.roster.length ? ev.roster : Object.values(db.players).map(p=>p.name);
+  if(has(snapshot)) return 'DNV';         // was in roster, didn't vote
+  return '';                              // player didn't exist yet
 }
 function gridData(mode){
   const evs=db.events.filter(e=>e.mode===mode).sort((a,b)=>a.date<b.date?-1:1);
-  const players=new Set();
-  for(const ev of evs) for(const s of ['noon','evening']) for(const m of ev.teams[s]) players.add(m.name);
+  const players=new Set(Object.values(db.players).map(p=>p.name));
+  for(const ev of evs){
+    for(const s of ['noon','evening']) for(const m of ev.teams[s]) players.add(m.name);
+    for(const key of ['waitlist','notAvailable','banned']) for(const n of (ev[key]||[])) players.add(n);
+  }
   const names=[...players].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:'base'}));
   return {evs,names};
 }
@@ -740,7 +766,15 @@ function renderGrid(){
   for(const mode of ['desert','canyon']){
     const {evs,names}=gridData(mode);
     if(!evs.length) continue;
-    const badge=v=>v==='STA'?'<span class="badge b-start">STA</span>':v==='SUB'?'<span class="badge b-sub">SUB</span>':v==='NP'?'<span class="badge b-ban">NP</span>':'<span class="muted">—</span>';
+    const badge=v=>({
+      STA:'<span class="badge b-start">STA</span>',
+      SUB:'<span class="badge b-sub">SUB</span>',
+      NP:'<span class="badge b-ban">NP</span>',
+      WL:'<span class="badge b-noon">WL</span>',
+      NA:'<span class="badge b-eve">NA</span>',
+      BAN:'<span class="badge b-ban">BAN</span>',
+      DNV:'<span class="badge b-wait">DNV</span>'
+    })[v]||'<span class="muted">—</span>';
     html+=`<h3 style="color:${mode==='desert'?'var(--accent)':'var(--accent2)'}">${mode==='desert'?'🏜️ Desert Storm':'🏞️ Canyon Storm'} <button class="mini" onclick="exportGrid('${mode}')">⬇ Export grid CSV</button></h3>
       <div style="overflow-x:auto"><table><tr><th>Player</th>${evs.map(e=>`<th>${e.date}</th>`).join('')}</tr>`+
       names.map(n=>`<tr><td>${esc(n)}</td>${evs.map(ev=>`<td>${badge(gridValue(ev,n))}</td>`).join('')}</tr>`).join('')+'</table></div>';
