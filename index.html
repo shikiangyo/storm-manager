@@ -154,7 +154,7 @@
   <div class="panel" id="attendancePanel" style="display:none"></div>
   <div class="panel">
     <h2>History grid</h2>
-    <p class="help">Rows = players, columns = event dates. <span class="badge b-start">STA</span> started · <span class="badge b-sub">SUB</span> substitute · <span class="badge b-ban">NP</span> picked but no-show · <span class="badge b-noon">WL</span> applied, not picked · <span class="badge b-eve">NA</span> voted not available · <span class="badge b-ban">BAN</span> applied while banned · <span class="badge b-wait">DNV</span> in roster, didn't vote · — not in roster yet.</p>
+    <p class="help">Rows = players, columns = event dates. <span class="badge b-start">STA</span> started · <span class="badge b-sub">SUB</span> substitute · <span class="badge b-ban">NS</span> picked but no-show · <span class="badge b-noon">APP</span> applied, not picked · <span class="badge b-eve">NA</span> voted not available · <span class="badge b-ban">BAN</span> applied while banned · <span class="badge b-wait">DNV</span> in roster, didn't vote · — not in roster yet.</p>
     <div id="gridArea"></div>
   </div>
 </section>
@@ -740,10 +740,10 @@ window.applyBans=id=>{
 function gridValue(ev,name){
   const has=(arr)=>(arr||[]).some(n=>norm(n)===norm(name));
   for(const s of ['noon','evening']) for(const m of ev.teams[s]) if(norm(m.name)===norm(name)){
-    if(m.attended===false) return 'NP';
+    if(m.attended===false) return 'NS';   // picked but no-show
     return m.role==='starter'?'STA':'SUB';
   }
-  if(has(ev.waitlist)) return 'WL';       // applied & available, not picked
+  if(has(ev.waitlist)) return 'APP';      // applied & available, not picked
   if(has(ev.notAvailable)) return 'NA';   // voted, not available
   if(has(ev.banned)) return 'BAN';        // applied but ban-excluded
   const snapshot=ev.roster && ev.roster.length ? ev.roster : Object.values(db.players).map(p=>p.name);
@@ -769,8 +769,8 @@ function renderGrid(){
     const badge=v=>({
       STA:'<span class="badge b-start">STA</span>',
       SUB:'<span class="badge b-sub">SUB</span>',
-      NP:'<span class="badge b-ban">NP</span>',
-      WL:'<span class="badge b-noon">WL</span>',
+      NS:'<span class="badge b-ban">NS</span>',
+      APP:'<span class="badge b-noon">APP</span>',
       NA:'<span class="badge b-eve">NA</span>',
       BAN:'<span class="badge b-ban">BAN</span>',
       DNV:'<span class="badge b-wait">DNV</span>'
