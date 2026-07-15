@@ -698,10 +698,48 @@ window.openEvent=id=>{
       ${ro
         ? `<span class="muted">Attendance saved and locked to prevent accidental edits.</span> <button class="btn ghost" onclick="unlockEvent(${id})">🔓 Unlock to edit</button>`
         : `<button class="btn ok" onclick="markAll(${id},true)">Mark all as showed</button>
-           <button class="btn gold" onclick="applyBans(${id})">💾 Save attendance &amp; apply bans</button>`}
+           <button class="btn gold" onclick="applyBans(${id})">💾 Save attendance &amp; apply bans</button>
+           <button class="btn ghost" onclick="switchMode(${id})">⇄ Change to ${ev.mode==='desert'?'Canyon':'Desert'} Storm</button>`}
     </div>
     <div class="flexh">${teamRows('noon','☀️ Noon')}${teamRows('evening','🌙 Evening')}</div>
     ${ev.waitlist.length?`<p class="help">Waitlist was: ${ev.waitlist.map(esc).join(', ')}</p>`:''}`;
+};
+window.switchMode=id=>{
+  const ev=db.events.find(e=>e.id===id); if(!ev)return;
+  const from=ev.mode, to=from==='desert'?'canyon':'desert';
+  if(!confirm(`Recategorise ${MODES[from]} ${ev.date} as ${MODES[to]}?\n\nNo-show bans from this event will move to ${MODES[to]}, and last picked / started / applied dates for everyone in this event will be recalculated for both modes.`)) return;
+  ev.mode=to;
+  // move bans that this event applied (only if the old-mode ban still matches this event)
+  const d=new Date(ev.date+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+(db.settings.banDays||14));
+  const until=d.toISOString().slice(0,10);
+  for(const s of ['noon','evening']) for(const m of ev.teams[s]){
+    if(m.attended===false && m.banApplied){
+      const p=getPlayer(m.name);
+      if(p.banUntil[from]===until) p.banUntil[from]=null;
+      if(!p.banUntil[to]||p.banUntil[to]<until) p.banUntil[to]=until;
+    }
+  }
+  // recalculate fairness dates for everyone involved, from the full event log
+  const involved=new Set([...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...(ev.waitlist||[]),...(ev.notAvailable||[]),...(ev.banned||[])].map(norm));
+  for(const key of Object.keys(db.players)){
+    const p=db.players[key];
+    if(!involved.has(norm(p.name))) continue;
+    for(const mode of ['desert','canyon']){
+      let sel=null,st=null,ap=null;
+      for(const e2 of db.events){
+        if(e2.mode!==mode) continue;
+        for(const s of ['noon','evening']) for(const m of e2.teams[s]) if(norm(m.name)===norm(p.name)){
+          if(!sel||sel<e2.date) sel=e2.date;
+          if(m.role==='starter'&&(!st||st<e2.date)) st=e2.date;
+        }
+        const applied=[...e2.teams.noon.map(m=>m.name),...e2.teams.evening.map(m=>m.name),...(e2.waitlist||[]),...(e2.notAvailable||[]),...(e2.banned||[])].some(n=>norm(n)===norm(p.name));
+        if(applied&&(!ap||ap<e2.date)) ap=e2.date;
+      }
+      p.lastSelected[mode]=sel; p.lastStarted[mode]=st; p.lastApplied[mode]=ap;
+    }
+  }
+  save(); renderEvents(); openEvent(id);
+  toast(`Recategorised as ${MODES[to]} — bans and fairness history moved`);
 };
 window.unlockEvent=id=>{
   const ev=db.events.find(e=>e.id===id); if(!ev)return;
