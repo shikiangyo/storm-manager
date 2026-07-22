@@ -139,7 +139,7 @@
       <button class="btn" id="btnAddPlayer">Add</button>
       <input type="text" id="rosterSearch" placeholder="🔍 Search…" style="margin-left:auto">
     </div>
-    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 14 days from the event date. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically. If the same person ended up as two roster entries (typo, different spelling), use 🔗 to merge the duplicate into the real one — histories are combined and the duplicate name becomes an alias.</p>
+    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 3 weeks (21 days) from the event date. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically. If the same person ended up as two roster entries (typo, different spelling), use 🔗 to merge the duplicate into the real one — histories are combined and the duplicate name becomes an alias.</p>
     <div id="rosterTable"></div>
   </div>
 </section>
@@ -148,7 +148,7 @@
 <section id="tab-history" style="display:none">
   <div class="panel">
     <h2>Events</h2>
-    <p class="help">After each battle, open the event and mark no-shows. Saving attendance applies the 2-week ban automatically — only for the mode the no-show happened in.</p>
+    <p class="help">After each battle, open the event and mark no-shows. Saving attendance applies the 3-week ban automatically — only for the mode the no-show happened in. Deleting an event removes all its effects (fairness dates, no-shows, bans).</p>
     <div id="eventList"></div>
   </div>
   <div class="panel" id="attendancePanel" style="display:none"></div>
@@ -203,13 +203,55 @@ function migrate(d){
     if(!p.banUntil||typeof p.banUntil==='string') p.banUntil={desert:p.banUntil||null,canyon:p.banUntil||null};
     p.lastApplied=p.lastApplied||{desert:null,canyon:null};
     p.lastStarted=p.lastStarted||{desert:null,canyon:null};
+    p.banCleared=p.banCleared||{desert:null,canyon:null};
   }
-  d.settings=d.settings||{banDays:14};
+  d.settings=d.settings||{banDays:21};
+  if(d.settings.banDays===14) d.settings.banDays=21; // ban policy updated to 3 weeks
   return d;
 }
 function load(){
   try{ const d=JSON.parse(localStorage.getItem(LS_KEY)); if(d&&d.players) return migrate(d); }catch(e){}
-  return { players:{}, events:[], settings:{banDays:14} };
+  return { players:{}, events:[], settings:{banDays:21} };
+}
+// Rebuild every derived stat from the event log. This is the single source of
+// truth: deleting or editing an event automatically removes/updates its effects.
+function recomputeDerived(){
+  const banDays=db.settings.banDays||21;
+  for(const k of Object.keys(db.players)){
+    const p=db.players[k];
+    p.selections=0; p.noShows=0;
+    p.lastSelected={desert:null,canyon:null};
+    p.lastStarted={desert:null,canyon:null};
+    p.lastApplied={desert:null,canyon:null};
+    p.banUntil={desert:null,canyon:null};
+  }
+  for(const ev of db.events){
+    const mode=ev.mode;
+    for(const s of ['noon','evening']) for(const m of ev.teams[s]){
+      const key=resolveKey(m.name); if(!key) continue; // player removed from roster
+      const p=db.players[key];
+      p.selections++;
+      if(!p.lastSelected[mode]||p.lastSelected[mode]<ev.date) p.lastSelected[mode]=ev.date;
+      if(m.role==='starter'&&(!p.lastStarted[mode]||p.lastStarted[mode]<ev.date)) p.lastStarted[mode]=ev.date;
+      if(m.attended===false){
+        p.noShows++;
+        const d=new Date(ev.date+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+banDays);
+        const until=d.toISOString().slice(0,10);
+        if(!p.banUntil[mode]||p.banUntil[mode]<until) p.banUntil[mode]=until;
+      }
+    }
+    for(const n of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...(ev.waitlist||[]),...(ev.notAvailable||[]),...(ev.banned||[])]){
+      const key=resolveKey(n); if(!key) continue;
+      const p=db.players[key];
+      if(!p.lastApplied[mode]||p.lastApplied[mode]<ev.date) p.lastApplied[mode]=ev.date;
+    }
+  }
+  // respect bans an officer manually cleared
+  for(const k of Object.keys(db.players)){
+    const p=db.players[k]; p.banCleared=p.banCleared||{desert:null,canyon:null};
+    for(const m of ['desert','canyon']) if(p.banUntil[m]&&p.banCleared[m]&&p.banCleared[m]>=p.banUntil[m]) p.banUntil[m]=null;
+  }
+  save();
 }
 function save(){ localStorage.setItem(LS_KEY, JSON.stringify(db)); }
 function toast(msg,err){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2600); }
@@ -225,7 +267,7 @@ function resolveKey(name){
 }
 function getPlayer(name){
   let k=resolveKey(name);
-  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},lastApplied:{desert:null,canyon:null},lastStarted:{desert:null,canyon:null},aliases:[],notes:''}; }
+  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},lastApplied:{desert:null,canyon:null},lastStarted:{desert:null,canyon:null},banCleared:{desert:null,canyon:null},aliases:[],notes:''}; }
   return db.players[k];
 }
 function renamePlayer(oldKey,newName){
@@ -545,17 +587,8 @@ document.getElementById('btnSaveEvent').onclick=()=>{
     notAvailable:A.notAvailable.map(m=>m.name),
     banned:A.banned.map(b=>b.name),
     roster:Object.values(db.players).map(p=>p.name)}; // snapshot for "didn't vote"
-  for(const slot of ['noon','evening']) ev.teams[slot].forEach((m,i)=>{
-    const p=getPlayer(m.name); p.selections++; p.lastSelected[A.mode]=A.date;
-    p.lastStarted=p.lastStarted||{desert:null,canyon:null};
-    if(m.role==='starter' && (!p.lastStarted[A.mode]||p.lastStarted[A.mode]<A.date)) p.lastStarted[A.mode]=A.date;
-  });
-  // every applicant (selected, waitlisted, not-available or banned) gets their application recorded
-  for(const name of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...A.waitlist.map(m=>m.name),...A.notAvailable.map(m=>m.name),...A.banned.map(b=>b.name)]){
-    const p=getPlayer(name); p.lastApplied=p.lastApplied||{desert:null,canyon:null};
-    if(!p.lastApplied[A.mode]||p.lastApplied[A.mode]<A.date) p.lastApplied[A.mode]=A.date;
-  }
-  db.events.push(ev); db.events.sort((a,b)=>a.date<b.date?1:-1); save();
+  db.events.push(ev); db.events.sort((a,b)=>a.date<b.date?1:-1);
+  recomputeDerived(); // selections, fairness dates and applications all derive from the event log
   toast('Event saved — selections recorded for fairness tracking');
   apps=[]; pendingAssignment=null; renderApps();
   document.getElementById('assignResult').innerHTML=''; hideSaveButtons();
@@ -640,7 +673,13 @@ window.uiMerge=k=>{
   if(err){ toast(err,'err'); return; }
   renderRoster(); toast(`${s.name} merged into ${t.name}`);
 };
-window.clearBan=(k,mode)=>{ db.players[k].banUntil[mode]=null; save(); renderRoster(); toast(`${mode==='desert'?'Desert Storm':'Canyon Storm'} ban cleared`); };
+window.clearBan=(k,mode)=>{
+  const p=db.players[k];
+  p.banCleared=p.banCleared||{desert:null,canyon:null};
+  p.banCleared[mode]=p.banUntil[mode]; // remember the clear so recomputes don't resurrect it
+  p.banUntil[mode]=null;
+  save(); renderRoster(); toast(`${mode==='desert'?'Desert Storm':'Canyon Storm'} ban cleared`);
+};
 window.delPlayer=k=>{ if(confirm(`Remove ${db.players[k].name} from the roster? History stays in past events.`)){ delete db.players[k]; save(); renderRoster(); } };
 document.getElementById('btnAddPlayer').onclick=()=>{
   const el=document.getElementById('newPlayerName'); const name=el.value.trim();
@@ -674,9 +713,11 @@ function renderEvents(){
   renderGrid();
 }
 window.delEvent=id=>{
-  if(!confirm('Delete this event? (Does not undo bans or selection history)'))return;
-  db.events=db.events.filter(e=>e.id!==id); save(); renderEvents();
+  if(!confirm('Delete this event?\n\nAll its effects are removed: selections, last picked/started/applied dates, no-show counts and bans from this event are recalculated as if it never happened.'))return;
+  db.events=db.events.filter(e=>e.id!==id);
+  recomputeDerived(); renderEvents();
   document.getElementById('attendancePanel').style.display='none';
+  toast('Event deleted — history and bans recalculated');
 };
 window.openEvent=id=>{
   const ev=db.events.find(e=>e.id===id); if(!ev)return;
@@ -709,41 +750,13 @@ window.switchMode=id=>{
   const from=ev.mode, to=from==='desert'?'canyon':'desert';
   if(!confirm(`Recategorise ${MODES[from]} ${ev.date} as ${MODES[to]}?\n\nNo-show bans from this event will move to ${MODES[to]}, and last picked / started / applied dates for everyone in this event will be recalculated for both modes.`)) return;
   ev.mode=to;
-  // move bans that this event applied (only if the old-mode ban still matches this event)
-  const d=new Date(ev.date+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+(db.settings.banDays||14));
-  const until=d.toISOString().slice(0,10);
-  for(const s of ['noon','evening']) for(const m of ev.teams[s]){
-    if(m.attended===false && m.banApplied){
-      const p=getPlayer(m.name);
-      if(p.banUntil[from]===until) p.banUntil[from]=null;
-      if(!p.banUntil[to]||p.banUntil[to]<until) p.banUntil[to]=until;
-    }
-  }
-  // recalculate fairness dates for everyone involved, from the full event log
-  const involved=new Set([...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...(ev.waitlist||[]),...(ev.notAvailable||[]),...(ev.banned||[])].map(norm));
-  for(const key of Object.keys(db.players)){
-    const p=db.players[key];
-    if(!involved.has(norm(p.name))) continue;
-    for(const mode of ['desert','canyon']){
-      let sel=null,st=null,ap=null;
-      for(const e2 of db.events){
-        if(e2.mode!==mode) continue;
-        for(const s of ['noon','evening']) for(const m of e2.teams[s]) if(norm(m.name)===norm(p.name)){
-          if(!sel||sel<e2.date) sel=e2.date;
-          if(m.role==='starter'&&(!st||st<e2.date)) st=e2.date;
-        }
-        const applied=[...e2.teams.noon.map(m=>m.name),...e2.teams.evening.map(m=>m.name),...(e2.waitlist||[]),...(e2.notAvailable||[]),...(e2.banned||[])].some(n=>norm(n)===norm(p.name));
-        if(applied&&(!ap||ap<e2.date)) ap=e2.date;
-      }
-      p.lastSelected[mode]=sel; p.lastStarted[mode]=st; p.lastApplied[mode]=ap;
-    }
-  }
-  save(); renderEvents(); openEvent(id);
+  recomputeDerived(); // bans and fairness dates follow the event's new mode automatically
+  renderEvents(); openEvent(id);
   toast(`Recategorised as ${MODES[to]} — bans and fairness history moved`);
 };
 window.unlockEvent=id=>{
   const ev=db.events.find(e=>e.id===id); if(!ev)return;
-  if(!confirm(`Unlock ${MODES[ev.mode]} ${ev.date} for editing?\n\nDouble-check this is the right event — there is no undo. Bans already applied are not reverted by editing.`)) return;
+  if(!confirm(`Unlock ${MODES[ev.mode]} ${ev.date} for editing?\n\nDouble-check this is the right event. When you save again, bans and history are recalculated from the corrected attendance.`)) return;
   ev.locked=false; save(); renderEvents(); openEvent(id);
 };
 window.markAtt=(id,slot,i,val)=>{
@@ -758,20 +771,14 @@ window.applyBans=id=>{
   const ev=db.events.find(e=>e.id===id);
   let bans=0;
   for(const s of ['noon','evening']) for(const m of ev.teams[s]){
-    if(m.attended===false && !m.banApplied){
-      const p=getPlayer(m.name); p.noShows++;
-      const d=new Date(ev.date+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+ (db.settings.banDays||14));
-      const until=d.toISOString().slice(0,10);
-      // ban applies only to the mode where the no-show happened
-      if(!p.banUntil[ev.mode] || p.banUntil[ev.mode]<until) p.banUntil[ev.mode]=until;
-      m.banApplied=true; bans++;
-    }
+    if(m.attended===false) bans++;
     if(m.attended===null) m.attended=true; // default unmarked to showed
   }
   ev.locked=true; // lock to prevent accidental edits of the wrong event
-  save(); renderEvents();
+  recomputeDerived(); // bans & no-show counts derive from the event log
+  renderEvents();
   document.getElementById('attendancePanel').style.display='none';
-  toast(bans?`Saved & locked — ${bans} player${bans>1?'s':''} banned for ${db.settings.banDays} days`:'Attendance saved & locked');
+  toast(bans?`Saved & locked — ${bans} no-show${bans>1?'s':''}, banned from ${MODES[ev.mode]} for ${db.settings.banDays} days`:'Attendance saved & locked');
 };
 
 /* ================= history grid ================= */
@@ -835,7 +842,9 @@ updateModeChip();
 
 /* ================= settings / data ================= */
 document.getElementById('btnSaveSettings').onclick=()=>{
-  db.settings.banDays=+document.getElementById('setBanDays').value||14; save(); toast('Settings saved');
+  db.settings.banDays=+document.getElementById('setBanDays').value||21;
+  recomputeDerived(); // existing bans re-lengthen/shorten to match the new policy
+  toast('Settings saved — bans recalculated');
 };
 document.getElementById('btnExportJSON').onclick=()=>download('storm-manager-backup.json',JSON.stringify(db,null,2),'application/json');
 document.getElementById('importJSON').onchange=e=>{
