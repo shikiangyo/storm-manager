@@ -839,6 +839,9 @@ function updateModeChip(){
   el.innerHTML=modeChipHtml(document.getElementById('evMode').value);
 }
 updateModeChip();
+// Reconcile on every load: heals stale stats left by deletions/edits made
+// under older versions, and keeps everything consistent with the event log.
+recomputeDerived();
 
 /* ================= settings / data ================= */
 document.getElementById('btnSaveSettings').onclick=()=>{
