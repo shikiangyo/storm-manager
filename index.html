@@ -265,6 +265,7 @@ function resolveKey(name){
     if((db.players[key].aliases||[]).includes(k)) return key;
   return null;
 }
+function peekPlayer(name){ const k=resolveKey(name); return k?db.players[k]:null; } // read-only: never creates
 function getPlayer(name){
   let k=resolveKey(name);
   if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},lastApplied:{desert:null,canyon:null},lastStarted:{desert:null,canyon:null},banCleared:{desert:null,canyon:null},aliases:[],notes:''}; }
@@ -496,12 +497,14 @@ function renderAssignment(){
   const A=pendingAssignment; if(!A) return;
   A.waitlist.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
   const history=name=>{
-    const p=getPlayer(name), la=(p.lastApplied||{})[A.mode];
+    const p=peekPlayer(name);
+    if(!p) return '<span class="muted" style="font-size:11px">not in roster</span>';
+    const la=(p.lastApplied||{})[A.mode];
     return `<span class="muted" style="font-size:11px">picked ${fmtDate(p.lastSelected[A.mode])} · applied ${fmtDate(la)}</span>`;
   };
   const banBadge=name=>{
-    const p=getPlayer(name);
-    return isBanned(p,A.mode,A.date)?`<span class="badge b-ban">BANNED until ${p.banUntil[A.mode]}</span> `:'';
+    const p=peekPlayer(name);
+    return p&&isBanned(p,A.mode,A.date)?`<span class="badge b-ban">BANNED until ${p.banUntil[A.mode]}</span> `:'';
   };
   const teamHtml=(slot,label)=>{
     const list=A.teams[slot];
@@ -516,7 +519,8 @@ function renderAssignment(){
       <table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
   };
   const wl=A.waitlist.map((m,i)=>{
-    const banned=isBanned(getPlayer(m.name),A.mode,A.date);
+    const pp=peekPlayer(m.name);
+    const banned=pp&&isBanned(pp,A.mode,A.date);
     const btns=[];
     if(!banned){
       if(m.avail!=='evening') btns.push(`<button class="mini" onclick="promoteTo(${i},'noon')">→ ☀️ Noon</button>`);
@@ -563,8 +567,8 @@ window.removeNa=i=>{
 };
 window.promoteTo=(i,slot)=>{
   const A=pendingAssignment, m=A.waitlist[i];
-  const p=getPlayer(m.name);
-  if(isBanned(p,A.mode,A.date)){ toast(`${m.name} is banned from ${MODES[A.mode]} until ${p.banUntil[A.mode]} — cannot be added`,'err'); renderAssignment(); return; }
+  const p=peekPlayer(m.name);
+  if(p&&isBanned(p,A.mode,A.date)){ toast(`${m.name} is banned from ${MODES[A.mode]} until ${p.banUntil[A.mode]} — cannot be added`,'err'); renderAssignment(); return; }
   if(A.teams[slot].length>=A.teamSize){ toast(`${slot==='noon'?'Noon':'Evening'} team is full (${A.teamSize}) — drop someone first`,'err'); return; }
   A.waitlist.splice(i,1); A.teams[slot].push(m); renderAssignment();
   toast(`${m.name} added to ${slot==='noon'?'☀️ Noon':'🌙 Evening'}`);
@@ -623,6 +627,7 @@ document.getElementById('btnCopyTeams').onclick=()=>{
 };
 
 /* ================= roster tab ================= */
+let rosterKeys=[]; // maps rendered row index -> db.players key
 function renderRoster(){
   const today=new Date().toISOString().slice(0,10);
   const players=Object.values(db.players).sort((a,b)=>a.name.localeCompare(b.name));
@@ -633,26 +638,27 @@ function renderRoster(){
     <div class="stat"><div class="n">${players.filter(p=>p.guaranteed).length}</div><div class="l">Guaranteed</div></div>
     <div class="stat"><div class="n">${players.filter(p=>isBanned(p,'desert',today)||isBanned(p,'canyon',today)).length}</div><div class="l">Currently banned</div></div>
     <div class="stat"><div class="n">${db.events.length}</div><div class="l">Events run</div></div>`;
-  const rows=shown.map(p=>{
-    const k=norm(p.name);
+  rosterKeys=shown.map(p=>norm(p.name)); // index-based refs: safe for names with quotes/apostrophes
+  const rows=shown.map((p,idx)=>{
     const aka=(p.aliases||[]).length?`<div class="muted" style="font-size:11px">formerly: ${p.aliases.map(esc).join(', ')}</div>`:'';
     return `<tr>
-      <td>${esc(p.name)} <button class="mini" title="Rename (keeps history)" onclick="uiRename('${k}')">✏️</button> <button class="mini" title="Merge a duplicate player into this one" onclick="uiMerge('${k}')">🔗</button>${aka}</td>
-      <td><input type="checkbox" ${p.guaranteed?'checked':''} onchange="setGuar('${k}',this.checked)"></td>
+      <td>${esc(p.name)} <button class="mini" title="Rename (keeps history)" onclick="uiRename(${idx})">✏️</button> <button class="mini" title="Merge a duplicate player into this one" onclick="uiMerge(${idx})">🔗</button>${aka}</td>
+      <td><input type="checkbox" ${p.guaranteed?'checked':''} onchange="setGuar(${idx},this.checked)"></td>
       <td>${p.selections}</td>
       <td class="muted">${fmtDate(p.lastSelected.desert)}</td>
       <td class="muted">${fmtDate(p.lastSelected.canyon)}</td>
       <td>${p.noShows?`<span style="color:var(--red)">${p.noShows}</span>`:'0'}</td>
-      <td>${['desert','canyon'].map(m=>isBanned(p,m,today)?`<div><span class="badge b-ban">${m==='desert'?'Desert':'Canyon'} until ${p.banUntil[m]}</span> <button class="mini" onclick="clearBan('${k}','${m}')">clear</button></div>`:'').join('')||'—'}</td>
-      <td><button class="mini" onclick="delPlayer('${k}')">🗑</button></td>
+      <td>${['desert','canyon'].map(m=>isBanned(p,m,today)?`<div><span class="badge b-ban">${m==='desert'?'Desert':'Canyon'} until ${p.banUntil[m]}</span> <button class="mini" onclick="clearBan(${idx},'${m}')">clear</button></div>`:'').join('')||'—'}</td>
+      <td><button class="mini" onclick="delPlayer(${idx})">🗑</button></td>
     </tr>`;
   }).join('');
   document.getElementById('rosterTable').innerHTML=`<table>
     <tr><th>Player</th><th>Guaranteed</th><th>Times picked</th><th>Last Desert</th><th>Last Canyon</th><th>No-shows</th><th>Ban</th><th></th></tr>
     ${rows||'<tr><td colspan=8 class=muted>No players yet — add them above or import applications.</td></tr>'}</table>`;
 }
-window.setGuar=(k,v)=>{ db.players[k].guaranteed=v; save(); renderRoster(); };
-window.uiRename=k=>{
+window.setGuar=(i,v)=>{ db.players[rosterKeys[i]].guaranteed=v; save(); renderRoster(); };
+window.uiRename=i=>{
+  const k=rosterKeys[i];
   const p=db.players[k];
   const nn=prompt(`New name for ${p.name}?\nTheir history, fairness priority, bans and no-shows stay attached, and applications under the old name will still match.`,p.name);
   if(nn===null||nn.trim()===p.name) return;
@@ -660,7 +666,8 @@ window.uiRename=k=>{
   if(err){ toast(err,'err'); return; }
   renderRoster(); toast(`Renamed to ${nn.trim()} — history kept`);
 };
-window.uiMerge=k=>{
+window.uiMerge=i=>{
+  const k=rosterKeys[i];
   const t=db.players[k];
   const nn=prompt(`Merge a duplicate into ${t.name}?\n\nType the duplicate's name. Its history (times picked, no-shows, bans, fairness dates) will be combined into ${t.name}, and the duplicate's name becomes a former name so future applications under it still match.`);
   if(!nn||!nn.trim()) return;
@@ -673,14 +680,30 @@ window.uiMerge=k=>{
   if(err){ toast(err,'err'); return; }
   renderRoster(); toast(`${s.name} merged into ${t.name}`);
 };
-window.clearBan=(k,mode)=>{
-  const p=db.players[k];
+window.clearBan=(i,mode)=>{
+  const p=db.players[rosterKeys[i]];
   p.banCleared=p.banCleared||{desert:null,canyon:null};
   p.banCleared[mode]=p.banUntil[mode]; // remember the clear so recomputes don't resurrect it
   p.banUntil[mode]=null;
   save(); renderRoster(); toast(`${mode==='desert'?'Desert Storm':'Canyon Storm'} ban cleared`);
 };
-window.delPlayer=k=>{ if(confirm(`Remove ${db.players[k].name} from the roster? History stays in past events.`)){ delete db.players[k]; save(); renderRoster(); } };
+window.delPlayer=i=>{
+  const k=rosterKeys[i]; if(!k||!db.players[k]) return;
+  if(!confirm(`Remove ${db.players[k].name} from the roster?\n\nThey disappear from the roster, DNV tracking and fairness. Their rows in past saved events remain as a record.`)) return;
+  delete db.players[k];
+  // also drop them from the current unsaved event, so nothing recreates them
+  apps=apps.filter(a=>norm(a.name)!==k);
+  review=review.filter(r=>norm(r.name)!==k);
+  if(pendingAssignment){
+    const A=pendingAssignment;
+    for(const s of ['noon','evening']) A.teams[s]=A.teams[s].filter(m=>norm(m.name)!==k);
+    A.waitlist=A.waitlist.filter(m=>norm(m.name)!==k);
+    A.notAvailable=A.notAvailable.filter(m=>norm(m.name)!==k);
+    A.banned=A.banned.filter(b=>norm(b.name)!==k);
+    renderApps(); renderReview(); renderAssignment();
+  }
+  save(); renderRoster(); toast('Player removed');
+};
 document.getElementById('btnAddPlayer').onclick=()=>{
   const el=document.getElementById('newPlayerName'); const name=el.value.trim();
   if(!name) return;
