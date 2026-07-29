@@ -518,6 +518,9 @@ function renderAssignment(){
     return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}</h3>
       <table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
   };
+  // last 3 saved events for this mode, oldest -> newest, shown as grid-style history columns
+  const recentEvs=db.events.filter(e=>e.mode===A.mode).sort((a,b)=>a.date<b.date?-1:1).slice(-3);
+  const wlHistHead=recentEvs.length?recentEvs.map(e=>`<th>${e.date}</th>`).join(''):'<th>Last picked / applied</th>';
   const wl=A.waitlist.map((m,i)=>{
     const pp=peekPlayer(m.name);
     const banned=pp&&isBanned(pp,A.mode,A.date);
@@ -527,8 +530,11 @@ function renderAssignment(){
       if(m.avail!=='noon') btns.push(`<button class="mini" onclick="promoteTo(${i},'evening')">→ 🌙 Evening</button>`);
     }
     btns.push(`<button class="mini" title="Remove from event entirely" onclick="removeWait(${i})">✕</button>`);
+    const hist=recentEvs.length
+      ? recentEvs.map(ev=>`<td>${gridBadge(gridValue(ev,m.name))}</td>`).join('')
+      : `<td>${history(m.name)}</td>`;
     return `<tr><td>${i+1}</td><td>${esc(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
-    <td>${history(m.name)}</td>
+    ${hist}
     <td>${btns.join(' ')}</td></tr>`;
   }).join('');
   const bn=A.banned.map(b=>`<li>${esc(b.name)} — banned until ${b.until} &nbsp; ${history(b.name)}</li>`).join('');
@@ -536,7 +542,7 @@ function renderAssignment(){
   const na=A.notAvailable.map((m,i)=>`<li>${esc(m.name)} &nbsp; ${history(m.name)} <button class="mini" title="Remove from event" onclick="removeNa(${i})">✕</button></li>`).join('');
   document.getElementById('assignResult').innerHTML=`
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
-    ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th></th></tr>${wl}</table>`:''}
+    ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th>${wlHistHead}<th></th></tr>${wl}</table>`:''}
     ${A.notAvailable.length?`<h3 style="color:var(--muted)">Voted — not available this week</h3><ul class="muted">${na}</ul>`:''}
     ${A.banned.length?`<h3 style="color:var(--red)">Excluded — no-show ban (cannot be added)</h3><ul class="muted">${bn}</ul>`:''}
     <p class="help">Starters: guaranteed first, then longest since last started in this mode. Click a STARTER/SUB badge to change roles manually. Nothing is recorded until you confirm.</p>`;
@@ -805,6 +811,17 @@ window.applyBans=id=>{
 };
 
 /* ================= history grid ================= */
+function gridBadge(v){
+  return ({
+    STA:'<span class="badge b-start">STA</span>',
+    SUB:'<span class="badge b-sub">SUB</span>',
+    NS:'<span class="badge b-ban">NS</span>',
+    APP:'<span class="badge b-noon">APP</span>',
+    NA:'<span class="badge b-eve">NA</span>',
+    BAN:'<span class="badge b-ban">BAN</span>',
+    DNV:'<span class="badge b-wait">DNV</span>'
+  })[v]||'<span class="muted">—</span>';
+}
 function gridValue(ev,name){
   const has=(arr)=>(arr||[]).some(n=>norm(n)===norm(name));
   for(const s of ['noon','evening']) for(const m of ev.teams[s]) if(norm(m.name)===norm(name)){
@@ -834,18 +851,9 @@ function renderGrid(){
   for(const mode of ['desert','canyon']){
     const {evs,names}=gridData(mode);
     if(!evs.length) continue;
-    const badge=v=>({
-      STA:'<span class="badge b-start">STA</span>',
-      SUB:'<span class="badge b-sub">SUB</span>',
-      NS:'<span class="badge b-ban">NS</span>',
-      APP:'<span class="badge b-noon">APP</span>',
-      NA:'<span class="badge b-eve">NA</span>',
-      BAN:'<span class="badge b-ban">BAN</span>',
-      DNV:'<span class="badge b-wait">DNV</span>'
-    })[v]||'<span class="muted">—</span>';
     html+=`<h3 style="color:${mode==='desert'?'var(--accent)':'var(--accent2)'}">${mode==='desert'?'🏜️ Desert Storm':'🏞️ Canyon Storm'} <button class="mini" onclick="exportGrid('${mode}')">⬇ Export grid CSV</button></h3>
       <div style="overflow-x:auto"><table><tr><th>Player</th>${evs.map(e=>`<th>${e.date}</th>`).join('')}</tr>`+
-      names.map(n=>`<tr><td>${esc(n)}</td>${evs.map(ev=>`<td>${badge(gridValue(ev,n))}</td>`).join('')}</tr>`).join('')+'</table></div>';
+      names.map(n=>`<tr><td>${esc(n)}</td>${evs.map(ev=>`<td>${gridBadge(gridValue(ev,n))}</td>`).join('')}</tr>`).join('')+'</table></div>';
   }
   area.innerHTML=html||'<p class="muted">No saved events yet — the grid builds itself as you run events.</p>';
 }
