@@ -518,8 +518,8 @@ function renderAssignment(){
     return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}</h3>
       <table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
   };
-  // last 3 saved events for this mode, oldest -> newest, shown as grid-style history columns
-  const recentEvs=db.events.filter(e=>e.mode===A.mode).sort((a,b)=>a.date<b.date?-1:1).slice(-3);
+  // last 5 saved events for this mode, oldest -> newest, shown as grid-style history columns
+  const recentEvs=db.events.filter(e=>e.mode===A.mode).sort((a,b)=>a.date<b.date?-1:1).slice(-5);
   const wlHistHead=recentEvs.length?recentEvs.map(e=>`<th>${e.date}</th>`).join(''):'<th>Last picked / applied</th>';
   const wl=A.waitlist.map((m,i)=>{
     const pp=peekPlayer(m.name);
