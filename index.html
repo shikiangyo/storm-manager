@@ -1621,6 +1621,12 @@ const CS_PTYPE= ['Roamer','Holder','Flex'];
 const CS_ALLIANCE_LABEL={rulebringers:'Rulebringers',dawnbreakers:'Dawnbreakers'};
 
 // Team colours — A is canyon amber/red, B is electric steel-blue.
+// Desert gets its own look: sun-baked sand and leather rather than
+// the canyon's amber, with olive drab for Team B.
+const CS_THEME_DESERT={
+  A:{accent:'#e8873a',accent2:'#c1502e',ink:'#f6e7cc',sky1:'#3a2611',sky2:'#8a5a2b',bg:'#241708',panel:'#452e15',border:'#7d5628',muted:'#cfae82'},
+  B:{accent:'#d3bb5c',accent2:'#7d8c4a',ink:'#f0f2dd',sky1:'#1f2513',sky2:'#5a6534',bg:'#171b0d',panel:'#31391c',border:'#616b38',muted:'#b8be90'}
+};
 const CS_THEME={
   A:{accent:'#f6b23a',accent2:'#d84a2f',ink:'#f7e9d0',sky1:'#1c1206',sky2:'#3a2410',bg:'#150e06',panel:'#241809',border:'#5a3c18',muted:'#b09878'},
   B:{accent:'#35c4e0',accent2:'#f0a83c',ink:'#e6f2f7',sky1:'#07131b',sky2:'#123243',bg:'#06121a',panel:'#0e2029',border:'#1e4152',muted:'#9fb8c8'}
@@ -1803,6 +1809,84 @@ function csPlace(players, groups, lastsub, roles){
   return {result:out, benched:[...free,...subPool], midStarters};
 }
 
+/* Desert placement, per the alliance's actual method:
+     1. Roamers go into Float / Hospital.
+     2. Everyone else is dealt out strongest-first, one at a time, around
+        the remaining groups in setup order (Left Oil, Right Oil, Info,
+        Science), repeating until they're full. So Left Oil gets the
+        strongest and the 5th strongest, Right Oil the 2nd and 6th, etc.
+     3. Whoever is left over tops up Float / Hospital.
+   No T1 balancing pass here — the deal order is fixed and deliberate. */
+function csPlaceDesert(players, groups, lastsub, roles){
+  roles=roles||{};
+  const byPower=(a,b)=>b.power-a.power;
+  const out={}; groups.forEach(g=>out[g.key]={starters:[],pairs:[],extraSubs:[]});
+  const roam=groups.find(g=>g.kind==='roam');
+  const dealt=groups.filter(g=>g!==roam);
+  const needStarters=groups.reduce((s,g)=>s+g.starters,0);
+  const needSubs=groups.reduce((s,g)=>s+g.subs,0);
+
+  const marked=players.filter(p=>roles[p.id]==='Starter');
+  const unmarked=players.filter(p=>!roles[p.id]);
+  let starters=[...marked];
+  if(starters.length<needStarters){
+    const extra=[...unmarked].sort(byPower);
+    while(starters.length<needStarters&&extra.length) starters.push(extra.shift());
+  } else if(starters.length>needStarters){
+    starters.sort(byPower); starters=starters.slice(0,needStarters);
+  }
+  const startIds=new Set(starters.map(p=>p.id));
+  const bench=players.filter(p=>!startIds.has(p.id));
+
+  let pool=[...starters].sort(byPower);
+
+  // 1. Roamers into Float / Hospital (strongest first, up to its size).
+  if(roam){
+    const roamers=pool.filter(p=>p.ptype==='Roamer').slice(0,roam.starters);
+    const taken=new Set(roamers.map(p=>p.id));
+    out[roam.key].starters=roamers;
+    pool=pool.filter(p=>!taken.has(p.id));
+  }
+
+  // 2. Deal the rest round-robin, strongest first, in setup order.
+  const room={}; dealt.forEach(g=>room[g.key]=g.starters);
+  let moved=true;
+  while(pool.length&&moved){
+    moved=false;
+    for(const g of dealt){
+      if(!pool.length) break;
+      if(room[g.key]>0){ out[g.key].starters.push(pool.shift()); room[g.key]--; moved=true; }
+    }
+  }
+
+  // 3. Leftovers top up Float / Hospital.
+  if(roam) while(pool.length&&out[roam.key].starters.length<roam.starters) out[roam.key].starters.push(pool.shift());
+
+  // Subs are normally a flat pool in Desert, but honour the setup if any
+  // group has been given subs.
+  const subPool=[...bench].sort((a,b)=>{
+    if(a.power!==b.power) return a.power-b.power;
+    return (lastsub[a.id]||'0000-00-00').localeCompare(lastsub[b.id]||'0000-00-00');
+  });
+  let free=subPool.splice(0,needSubs);
+  groups.forEach(g=>{
+    if(g.subs<=0) return;
+    const slot=out[g.key];
+    [...slot.starters].sort((a,b)=>a.power-b.power).slice(0,g.subs).forEach(st=>{
+      if(!free.length) return;
+      let best=null;
+      free.forEach((sub,idx)=>{
+        const score=(st.t1===sub.t1?0:1)*1e9+Math.abs(st.power-sub.power);
+        if(!best||score<best.score) best={idx,sub,score};
+      });
+      slot.pairs.push({starter:st,sub:best.sub});
+      free.splice(best.idx,1);
+    });
+  });
+
+  return {result:out, benched:[...pool,...free,...subPool]};
+}
+
 function csSideLabel(groups, side){
   if(!side) return groups;
   return groups.map(g=>g.kind==='mid'
@@ -1898,7 +1982,8 @@ function csMailText(team, groups, assign, fmt){
    POSTER — dynamic SVG mission briefing
    ===================================================================== */
 function csPoster(team, groups, assign){
-  const T=CS_THEME[team], W=680;
+  const desertMode=(assign.gameMode||'canyon')==='desert';
+  const T=(desertMode?CS_THEME_DESERT:CS_THEME)[team], W=680;
   const B=db.cs.briefing[assign.gameMode||'canyon'];
   const isDB=assign.allianceKey==='dawnbreakers';
   const stamp=isDB?`DAWNBREAKERS${assign.side?' · '+assign.side.toUpperCase():''}`:'CLASSIFIED';
@@ -1925,9 +2010,12 @@ function csPoster(team, groups, assign){
     const LH=19, TOPPAD=88, COLW=130;
     const h=Math.max(150,TOPPAD+rows*LH+12);
     const fs=twoCol?11:paired?13:15;
+    const rivet=(cx,cy)=>`<circle cx="${cx}" cy="${cy}" r="2.5" fill="${T.sky1}" stroke="${acc}" stroke-width="0.8" opacity="0.85"/>`;
     let s=`<g>
-<rect x="${x}" y="${y}" width="${CW}" height="${h}" rx="6" fill="${fill}" stroke="${bd}" stroke-width="1.5"/>
-<rect x="${x}" y="${y}" width="${CW}" height="4" fill="${acc}"/>
+<rect x="${x}" y="${y}" width="${CW}" height="${h}" rx="${isDesert?10:6}" fill="${fill}" stroke="${bd}" stroke-width="${isDesert?2.5:1.5}"/>
+${isDesert?`<rect x="${x+5}" y="${y+5}" width="${CW-10}" height="${h-10}" rx="7" fill="none" stroke="${acc}" stroke-width="0.8" opacity="0.35"/>
+${rivet(x+13,y+13)}${rivet(x+CW-13,y+13)}${rivet(x+13,y+h-13)}${rivet(x+CW-13,y+h-13)}`
+:`<rect x="${x}" y="${y}" width="${CW}" height="4" fill="${acc}"/>`}
 <rect x="${x+14}" y="${y+16}" width="${namedRoamers?120:86}" height="20" rx="3" fill="${acc}"/>
 <text x="${x+14+(namedRoamers?60:43)}" y="${y+30}" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="12" letter-spacing="1" fill="#160c05">${namedRoamers?'FREE ROAMERS':'GROUP '+(idx+1)}</text>
 <text x="${x+14+(namedRoamers?130:96)}" y="${y+31}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="11" fill="${team==='A'?'#e9c887':'#8fd0e0'}">${csEsc(g.short)}</text>
@@ -1966,13 +2054,17 @@ function csPoster(team, groups, assign){
 <rect x="0" y="0" width="${W}" height="${H}" fill="${T.bg}"/>
 <g clip-path="url(#hero)">
 <rect x="0" y="0" width="${W}" height="300" fill="url(#sky)"/>
-<polygon points="0,300 0,205 70,235 150,190 240,240 330,195 430,245 520,200 610,245 680,205 680,300" fill="${team==='A'?'#2a1a0c':'#16303d'}"/>
-<polygon points="0,300 0,250 90,270 180,235 300,275 400,245 500,280 600,248 680,272 680,300" fill="${T.sky2}"/>
+${isDesert
+  ? `<path d="M0,300 L0,232 Q90,196 180,224 Q270,252 360,214 Q450,178 540,216 Q610,246 680,220 L680,300 Z" fill="${team==='A'?'#5c3a19':'#3c4522'}" opacity="0.9"/>
+     <path d="M0,300 L0,266 Q110,238 210,264 Q320,292 430,262 Q540,232 680,262 L680,300 Z" fill="${T.sky2}" opacity="0.85"/>
+     <circle cx="566" cy="104" r="30" fill="${T.accent}" opacity="0.28"/>`
+  : `<polygon points="0,300 0,205 70,235 150,190 240,240 330,195 430,245 520,200 610,245 680,205 680,300" fill="${team==='A'?'#2a1a0c':'#16303d'}"/>
+     <polygon points="0,300 0,250 90,270 180,235 300,275 400,245 500,280 600,248 680,272 680,300" fill="${T.sky2}"/>`}
 </g>
 <rect x="0" y="24" width="${W}" height="26" fill="${T.accent2}"/>
 <text x="40" y="42" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="15" letter-spacing="3" fill="#160c05">1GN // MISSION BRIEFING</text>
 <text x="640" y="42" text-anchor="end" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="15" fill="#160c05">${csEsc(stamp)}</text>
-<text x="340" y="152" text-anchor="middle" font-family="'Black Ops One',Impact,sans-serif" font-size="66" letter-spacing="2" fill="${T.ink}">${csEsc(B.title)}</text>
+<text x="340" y="152" text-anchor="middle" font-family="'Black Ops One',Impact,sans-serif" font-size="66" letter-spacing="${isDesert?4:2}" fill="${T.ink}"${isDesert?` stroke="${T.accent2}" stroke-width="1.5" paint-order="stroke"`:''}>${csEsc(B.title)}</text>
 <text x="340" y="182" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="17" letter-spacing="${isDB?6:8}" fill="${T.accent}">${csEsc(sub)}</text>
 ${isDesert&&B.subtitle2?`<text x="340" y="202" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="13" letter-spacing="3" fill="${T.muted}">${csEsc(B.subtitle2)}</text>`:''}
 <polygon points="340,206 372,224 372,260 340,278 308,260 308,224" fill="${T.accent2}" stroke="${T.accent}" stroke-width="2"/>
@@ -2361,7 +2453,8 @@ function csRun(setupKey, side){
   const ctx=csCtx(); if(!ctx) return;
   const roles={}; ctx.picked.forEach(p=>roles[p.id]=p.role);
   const groups=csSideLabel(db.cs.setups[setupKey]||CS_DEFAULT_RB, setupKey==='dawnbreakers'?side:null);
-  const res=csPlace(ctx.picked, groups, db.cs.lastsub, roles);
+  const place=ctx.mode==='desert'?csPlaceDesert:csPlace;
+  const res=place(ctx.picked, groups, db.cs.lastsub, roles);
   db.cs.assign[ctx.ev.id+'|'+ctx.slot]={
     ...res, groups, setupKey,
     gameMode:ctx.mode,
@@ -2544,6 +2637,22 @@ window.csBriefEdit=(m,f,val)=>{
     ? val.split('\n').map(s=>s.trim()).filter(Boolean)
     : val.trim();
   save(); toast('Saved');
+};
+window.csSetupEdit=(which,i,field,val)=>{
+  const g=db.cs.setups[which] && db.cs.setups[which][i];
+  if(!g) return;
+  if(field==='starters'||field==='subs'){
+    val=Math.max(0,Math.min(12,parseInt(val,10)||0));
+  } else if(field==='kind'){
+    if(!['power','mid','roam'].includes(val)) return;
+  } else {
+    val=String(val).trim();
+    if(!val) { renderCsSetup(); return; }        // don't allow a blank name
+  }
+  g[field]=val;
+  save();
+  if(field==='starters'||field==='subs'||field==='kind') renderCsSetup();
+  toast('Saved');
 };
 window.csSetupAdd=which=>{
   db.cs.setups[which].push({key:'g'+csUid(),name:'New group',short:'NEW GROUP',starters:3,subs:0,kind:'mid'});
