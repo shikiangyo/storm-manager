@@ -341,6 +341,7 @@ function migrate(d){
   // ---- Canyon Storm module data (kept apart from the selection data) ----
   d.cs=d.cs||{};
   d.cs.roster=d.cs.roster||CS_SEED.map(p=>({...p}));
+  d.cs.roster.forEach(p=>{ if(!Array.isArray(p.aliases)) p.aliases=[]; });
   d.cs.setups=d.cs.setups||{rulebringers:JSON.parse(JSON.stringify(CS_DEFAULT_RB)),
                             dawnbreakers:JSON.parse(JSON.stringify(CS_DEFAULT_DB))};
   d.cs.assign=d.cs.assign||{};
@@ -891,7 +892,7 @@ function renderRoster(){
   const shown=q?players.filter(p=>norm(p.name).includes(q)):players;
   document.getElementById('rosterStats').innerHTML=`
     <div class="stat"><div class="n">${players.length}</div><div class="l">Players</div></div>
-    <div class="stat"><div class="n">${players.filter(p=>p.guaranteed).length}</div><div class="l">Guaranteed</div></div>
+    <div class="stat admin-only"><div class="n">${players.filter(p=>p.guaranteed).length}</div><div class="l">Guaranteed</div></div>
     <div class="stat"><div class="n">${players.filter(p=>isBanned(p,'desert',today)||isBanned(p,'canyon',today)).length}</div><div class="l">Currently banned</div></div>
     <div class="stat"><div class="n">${db.events.length}</div><div class="l">Events run</div></div>`;
   rosterKeys=shown.map(p=>norm(p.name)); // index-based refs: safe for names with quotes/apostrophes
@@ -899,7 +900,7 @@ function renderRoster(){
     const aka=(p.aliases||[]).length?`<div class="muted" style="font-size:11px">formerly: ${p.aliases.map(esc).join(', ')}</div>`:'';
     return `<tr>
       <td>${esc(p.name)} <button class="mini" title="Rename (keeps history)" onclick="uiRename(${idx})">✏️</button> <button class="mini" title="Merge a duplicate player into this one" onclick="uiMerge(${idx})">🔗</button>${aka}</td>
-      <td><input type="checkbox" ${p.guaranteed?'checked':''} onchange="setGuar(${idx},this.checked)"></td>
+      <td class="admin-only"><input type="checkbox" ${p.guaranteed?'checked':''} onchange="setGuar(${idx},this.checked)"></td>
       <td>${p.selections}</td>
       <td class="muted">${fmtDate(p.lastSelected.desert)}</td>
       <td class="muted">${fmtDate(p.lastSelected.canyon)}</td>
@@ -909,7 +910,7 @@ function renderRoster(){
     </tr>`;
   }).join('');
   document.getElementById('rosterTable').innerHTML=`<table>
-    <tr><th>Player</th><th>Guaranteed</th><th>Times picked</th><th>Last Desert</th><th>Last Canyon</th><th>No-shows</th><th>Ban</th><th></th></tr>
+    <tr><th>Player</th><th class="admin-only">Guaranteed</th><th>Times picked</th><th>Last Desert</th><th>Last Canyon</th><th>No-shows</th><th>Ban</th><th></th></tr>
     ${rows||'<tr><td colspan=8 class=muted>No players yet — add them above or import applications.</td></tr>'}</table>`;
 }
 window.setGuar=(i,v)=>{ db.players[rosterKeys[i]].guaranteed=v; save(); renderRoster(); };
@@ -1453,9 +1454,44 @@ function csFind(name){
   const n=norm(name);
   let p=db.cs.roster.find(x=>norm(x.name)===n);
   if(p) return p;
-  const key=resolveKey(name);              // catches former names / aliases
-  if(key) p=db.cs.roster.find(x=>norm(x.name)===key||resolveKey(x.name)===key);
+  // names linked by hand on the "link names" dialog
+  p=db.cs.roster.find(x=>(x.aliases||[]).some(a=>norm(a)===n));
+  if(p) return p;
+  const key=resolveKey(name);              // catches roster renames / merges
+  if(key) p=db.cs.roster.find(x=>norm(x.name)===key
+                              || resolveKey(x.name)===key
+                              || (x.aliases||[]).some(a=>norm(a)===key||resolveKey(a)===key));
   return p||null;
+}
+
+/* ---- fuzzy name matching (ported from CS Commander) ------------------ */
+function csLev(a,b){
+  a=a.toLowerCase(); b=b.toLowerCase();
+  const n=a.length, m=b.length;
+  if(!n) return m; if(!m) return n;
+  const d=Array.from({length:n+1},(_,i)=>[i,...Array(m).fill(0)]);
+  for(let j=0;j<=m;j++) d[0][j]=j;
+  for(let i=1;i<=n;i++) for(let j=1;j<=m;j++){
+    const c=a[i-1]===b[j-1]?0:1;
+    d[i][j]=Math.min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+c);
+  }
+  return d[n][m];
+}
+function csSimilar(a,b){
+  const x=norm(a), y=norm(b);
+  if(!x||!y) return 0;
+  if(x===y) return 1;
+  const strip=s=>s.replace(/[^a-z0-9]/g,'');
+  if(strip(x)===strip(y)) return 0.97;          // only punctuation/spacing differs
+  let s=1-csLev(x,y)/(Math.max(x.length,y.length)||1);
+  if(x.includes(y)||y.includes(x)) s=Math.max(s,0.82);
+  return s;
+}
+function csSuggest(name,pool,n){
+  return pool.map(p=>({p,s:csSimilar(name,p.name)}))
+             .sort((a,b)=>b.s-a.s)
+             .filter(r=>r.s>=0.45)
+             .slice(0,n||3);
 }
 function csAttrs(name){
   const p=csFind(name);
@@ -1783,7 +1819,9 @@ function renderCsPlayers(){
 
   wrap.innerHTML=`<table><thead><tr><th>Name</th><th>Power</th><th>T1 type</th><th>Player type</th><th></th></tr></thead><tbody>${
     shown.map(p=>`<tr>
-      <td><b>${csEsc(p.name)}</b>${inRoster(p.name)?'':' <span class="badge b-ban" title="No matching player on the Roster tab">unlinked</span>'}</td>
+      <td><b>${csEsc(p.name)}</b>${inRoster(p.name)?'':' <span class="badge b-ban" title="No matching player on the Roster tab">not on roster</span>'}
+        ${(p.aliases||[]).length?`<div class="muted" style="font-size:11px">also: ${p.aliases.map(a=>
+          `${csEsc(a)} <button class="mini admin-only" title="Remove this link" onclick="csUnlink('${p.id}','${csEsc(a).replace(/'/g,"&#39;")}')">✕</button>`).join(', ')}</div>`:''}</td>
       <td${p.power?'':' style="color:var(--red)"'}>${p.power?p.power.toLocaleString():'— not set'}</td>
       <td><span class="badge b-noon">${csEsc(p.t1)}</span></td>
       <td><span class="badge ${p.ptype==='Roamer'?'b-eve':'b-wait'}">${csEsc(p.ptype)}</span></td>
@@ -1818,7 +1856,8 @@ window.csEdit=id=>{
     const name=wrap.querySelector('#csfName').value.trim();
     if(!name){ toast('Name required','err'); return; }
     const rec={id:p.id||csUid(),name,power:+wrap.querySelector('#csfPower').value||0,
-               t1:wrap.querySelector('#csfT1').value, ptype:wrap.querySelector('#csfType').value};
+               t1:wrap.querySelector('#csfT1').value, ptype:wrap.querySelector('#csfType').value,
+               aliases:p.aliases||[]};
     if(p.id) db.cs.roster=db.cs.roster.map(x=>x.id===p.id?rec:x);
     else db.cs.roster.push(rec);
     save(); close(); renderCsPlayers(); toast('Saved');
@@ -1845,10 +1884,110 @@ window.csDelete=id=>{
 window.csPullRoster=()=>{
   let added=0;
   for(const p of Object.values(db.players)){
-    if(!csFind(p.name)){ db.cs.roster.push({id:csUid(),name:p.name,power:0,t1:'Tank',ptype:'Holder'}); added++; }
+    if(!csFind(p.name)){ db.cs.roster.push({id:csUid(),name:p.name,power:0,t1:'Tank',ptype:'Holder',aliases:[]}); added++; }
   }
   save(); renderCsPlayers();
   toast(added?`Added ${added} player(s) — set their power and types`:'Everyone already has a CS record');
+};
+
+/* =====================================================================
+   LINK NAMES — match event names that have no CS record
+   ===================================================================== */
+let csLinkQueue=[];
+
+window.csOpenLink=()=>{
+  const ctx=csCtx(); if(!ctx) return;
+  csLinkQueue=ctx.picked.filter(p=>p._missing).map(p=>p.name);
+  if(!csLinkQueue.length){ toast('Every name already matches a CS record'); return; }
+  csRenderLink();
+};
+
+function csRenderLink(){
+  const ctx=csCtx();
+  const existing=document.querySelector('.modal.cslink');
+  if(existing) existing.remove();
+  if(!csLinkQueue.length){ renderCsBuild(); toast('All names linked'); return; }
+
+  // don't offer CS records already claimed by someone else in this squad
+  const taken=new Set();
+  if(ctx) ctx.picked.forEach(p=>{ if(!p._missing) taken.add(p.id); });
+  const pool=db.cs.roster.filter(p=>!taken.has(p.id));
+
+  const wrap=document.createElement('div');
+  wrap.className='modal cslink';
+  wrap.innerHTML=`<div class="box" style="width:min(560px,94vw);max-height:88vh;overflow:auto">
+    <h3>${csLinkQueue.length} name${csLinkQueue.length===1?'':'s'} to link</h3>
+    <p class="help">These names have no Canyon Storm record. Match each one to an existing CS player —
+      that adds the name as an alias, so it matches automatically from now on — or add it as a brand-new record.</p>
+    <div id="csLinkList"></div>
+    <div class="row" style="margin:12px 0 0">
+      <button class="btn ghost" id="clDone">Done</button>
+      <span style="flex:1"></span>
+      <button class="btn" id="clAllNew">Add all ${csLinkQueue.length} as new</button>
+    </div></div>`;
+  document.body.appendChild(wrap);
+  wrap.onclick=e=>{ if(e.target===wrap){ wrap.remove(); renderCsBuild(); } };
+  wrap.querySelector('#clDone').onclick=()=>{ wrap.remove(); renderCsBuild(); };
+  wrap.querySelector('#clAllNew').onclick=()=>{
+    csLinkQueue.forEach(n=>db.cs.roster.push({id:csUid(),name:n,power:0,t1:'Tank',ptype:'Holder',aliases:[]}));
+    csLinkQueue=[]; save(); csRenderLink(); renderCsPlayers();
+  };
+
+  const list=wrap.querySelector('#csLinkList');
+  csLinkQueue.forEach(name=>{
+    const row=document.createElement('div');
+    row.style.cssText='padding:10px 0;border-top:1px solid var(--border)';
+    const sug=csSuggest(name,pool,3);
+    row.innerHTML=`
+      <div class="row" style="margin:0 0 6px">
+        <b style="flex:1">${csEsc(name)}</b>
+        <button class="btn ghost" data-new="1">+ Add as new</button>
+      </div>
+      ${sug.length?`<div class="row" style="margin:0 0 6px">${sug.map(r=>
+        `<button class="btn ghost" data-id="${r.p.id}" style="border-color:var(--green)">
+          <span style="color:var(--green)">⇄</span> ${csEsc(r.p.name)}
+          <span class="muted" style="font-size:11px">${Math.round(r.s*100)}%</span>
+        </button>`).join('')}</div>`
+        :'<p class="help" style="margin:0 0 6px">No close matches found.</p>'}
+      <input type="text" placeholder="…or search for someone else to match" data-search="1" style="width:100%">
+      <div data-results="1"></div>`;
+    list.appendChild(row);
+
+    const link=rec=>{
+      rec.aliases=rec.aliases||[];
+      if(!rec.aliases.some(a=>norm(a)===norm(name))) rec.aliases.push(name);
+      csLinkQueue=csLinkQueue.filter(n=>n!==name);
+      save(); csRenderLink(); renderCsPlayers();
+    };
+    row.querySelector('[data-new]').onclick=()=>{
+      db.cs.roster.push({id:csUid(),name,power:0,t1:'Tank',ptype:'Holder',aliases:[]});
+      csLinkQueue=csLinkQueue.filter(n=>n!==name);
+      save(); csRenderLink(); renderCsPlayers();
+    };
+    row.querySelectorAll('[data-id]').forEach(b=>b.onclick=()=>{
+      const rec=db.cs.roster.find(p=>p.id===b.dataset.id); if(rec) link(rec);
+    });
+    const box=row.querySelector('[data-search]'), res=row.querySelector('[data-results]');
+    box.oninput=()=>{
+      const q=norm(box.value);
+      if(!q){ res.innerHTML=''; return; }
+      const hits=pool.filter(p=>norm(p.name).includes(q)).slice(0,6);
+      res.innerHTML=hits.length
+        ? `<div class="row" style="margin:6px 0 0">${hits.map(p=>
+            `<button class="btn ghost" data-pick="${p.id}">${csEsc(p.name)}
+             <span class="muted" style="font-size:11px">${p.power?(p.power/1e6).toFixed(0)+'M':'no power'}</span></button>`).join('')}</div>`
+        : '<p class="help" style="margin:6px 0 0">No CS player matches that.</p>';
+      res.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{
+        const rec=db.cs.roster.find(p=>p.id===b.dataset.pick); if(rec) link(rec);
+      });
+    };
+  });
+}
+
+window.csUnlink=(id,alias)=>{
+  const rec=db.cs.roster.find(p=>p.id===id); if(!rec) return;
+  rec.aliases=(rec.aliases||[]).filter(a=>a!==alias);
+  save(); renderCsPlayers(); toast('Link removed');
 };
 
 /* =====================================================================
@@ -1902,9 +2041,16 @@ function renderCsBuild(){
   const accent=team==='A'?'var(--accent)':'var(--accent2)';
 
   let warn='';
-  if(missing.length) warn=`<div class="banner warn" style="margin:0 0 12px">⚠ <b>${missing.length} player(s) have no CS data</b> —
-    ${missing.map(p=>csEsc(p.name)).join(', ')}. They'll be placed as Tank / Holder at power 0, which will push them to the bottom.
-    Fix them on the <b>CS Players</b> tab for a sensible line-up.</div>`;
+  const unlinked=picked.filter(p=>p._missing);
+  const noPower=picked.filter(p=>!p._missing&&!p.power);
+  if(unlinked.length) warn+=`<div class="banner warn" style="margin:0 0 12px">
+    ⚠ <b>${unlinked.length} name${unlinked.length===1?' has':'s have'} no CS record</b> —
+    ${unlinked.map(p=>csEsc(p.name)).join(', ')}.
+    Link them to an existing CS player (or add them as new) so they aren't placed at power 0.
+    <div class="row" style="margin:8px 0 0"><button class="btn admin-only" onclick="csOpenLink()">🔗 Link names</button></div></div>`;
+  if(noPower.length) warn+=`<div class="banner warn" style="margin:0 0 12px">
+    ⚠ <b>${noPower.length} player(s) have no power set</b> — ${noPower.map(p=>csEsc(p.name)).join(', ')}.
+    They'll sort to the bottom of the draft. Set their power on the <b>CS Players</b> tab.</div>`;
 
   const setup=db.cs.setups[A?A.allianceKey:'rulebringers']||CS_DEFAULT_RB;
   const needS=setup.reduce((s,g)=>s+g.starters,0), needB=setup.reduce((s,g)=>s+g.subs,0);
@@ -2143,7 +2289,7 @@ document.getElementById('csImport').onchange=e=>{
       const name=c[0]; if(!name||norm(name)==='name') return;
       if(csFind(name)){ skipped++; return; }
       db.cs.roster.push({id:csUid(),name,power:Math.round(parseFloat(c[1])||0),
-        t1:CS_T1.includes(c[2])?c[2]:'Tank', ptype:CS_PTYPE.includes(c[3])?c[3]:'Holder'});
+        t1:CS_T1.includes(c[2])?c[2]:'Tank', ptype:CS_PTYPE.includes(c[3])?c[3]:'Holder', aliases:[]});
       added++;
     });
     save(); renderCsPlayers();
@@ -2152,7 +2298,7 @@ document.getElementById('csImport').onchange=e=>{
   r.readAsText(f); e.target.value='';
 };
 
-for(const n of ['csEdit','csDelete','csPullRoster','csAskAlliance','csClear','csSetupEdit','csSetupReset','csLogSubs']){
+for(const n of ['csEdit','csDelete','csPullRoster','csAskAlliance','csClear','csSetupEdit','csSetupReset','csLogSubs','csOpenLink','csUnlink']){
   const f=window[n];
   if(typeof f==='function') window[n]=function(){
     if(!isAdmin()){ toast('View only — log in as admin to make changes','err'); return; }
