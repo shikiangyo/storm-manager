@@ -270,8 +270,9 @@
     <p class="help">Reads a saved event and takes its picked players and their starter/sub roles exactly as the fairness
       selection set them — this tab never changes who plays. It then places them into groups by power and T1 spread,
       pairs each sub to a starter, and generates the mail and poster.<br>
-      For <b>Canyon Storm</b> the two slots run as Team A (noon) and Team B (evening).
-      For <b>Desert Storm</b> they stay as the Noon and Evening squads.</p>
+      Both modes run two squads. For <b>Canyon Storm</b> they're labelled Team A and Team B;
+      for <b>Desert Storm</b> the picker shows the actual Noon and Evening sittings, and the
+      poster labels them Team A and Team B to match your usual brief.</p>
     <div class="row">
       <label>Event <select id="csEvent"></select></label>
       <label>Squad <select id="csSlot"><option value="noon">☀️ Noon</option><option value="evening">🌙 Evening</option></select></label>
@@ -2123,9 +2124,22 @@ function csCtx(){
   return {ev,slot,team,picked,mode:ev.mode,lab};
 }
 
+// Canyon's two slots are really just Team A and Team B; Desert's are the
+// actual noon and evening sittings. Label the picker accordingly.
+function csSlotLabels(mode){
+  const sel=document.getElementById('csSlot'); if(!sel) return;
+  const txt=mode==='desert'
+    ? {noon:'\u2600\ufe0f Noon', evening:'\ud83c\udf19 Evening'}
+    : {noon:'\u2600\ufe0f Team A (noon)', evening:'\ud83c\udf19 Team B (evening)'};
+  [...sel.options].forEach(o=>{ if(txt[o.value]) o.textContent=txt[o.value]; });
+}
+
 function renderCsBuild(){
   const board=document.getElementById('csBoard'); if(!board) return;
   const ctx=csCtx();
+  const evSel=document.getElementById('csEvent');
+  const evNow=db.events.find(e=>String(e.id)===evSel.value);
+  csSlotLabels(evNow?evNow.mode:'canyon');
   const exp=document.getElementById('csExport');
   if(!ctx){
     board.innerHTML='<p class="muted">Save an event on the New Event tab first — its picked players appear here.</p>';
