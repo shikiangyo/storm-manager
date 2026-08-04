@@ -97,12 +97,12 @@
   </div>
   <nav>
     <button data-tab="event" class="active">New Event</button>
-    <button data-tab="squads">Squad Setup</button>
+    <button data-tab="squads">Manual squads</button>
     <button data-tab="roster">Roster</button>
     <button data-tab="history">History &amp; Attendance</button>
-    <button data-tab="csplayers">CS Players</button>
-    <button data-tab="csbuild">CS Build</button>
-    <button data-tab="cssetup">CS Setup</button>
+    <button data-tab="csplayers">Storm Players</button>
+    <button data-tab="csbuild">Storm Build</button>
+    <button data-tab="cssetup">Storm Setup</button>
     <button data-tab="settings">Data / Settings</button>
   </nav>
   <div id="authBar" class="authbar"></div>
@@ -266,13 +266,15 @@
 <!-- ============ CS BUILD TAB ============ -->
 <section id="tab-csbuild" style="display:none">
   <div class="panel">
-    <h2>CS Build</h2>
-    <p class="help">Reads a saved <b>Canyon Storm</b> event and takes its picked players and their starter/sub roles exactly as
-      the fairness selection set them — this tab never changes who plays. <b>Noon squad = Team A, Evening squad = Team B.</b>
-      It then places them into groups by power and T1 spread, pairs each sub to a starter, and generates the mail and poster.</p>
+    <h2>Storm Build</h2>
+    <p class="help">Reads a saved event and takes its picked players and their starter/sub roles exactly as the fairness
+      selection set them — this tab never changes who plays. It then places them into groups by power and T1 spread,
+      pairs each sub to a starter, and generates the mail and poster.<br>
+      For <b>Canyon Storm</b> the two slots run as Team A (noon) and Team B (evening).
+      For <b>Desert Storm</b> they stay as the Noon and Evening squads.</p>
     <div class="row">
-      <label>Canyon event <select id="csEvent"></select></label>
-      <label>Squad <select id="csSlot"><option value="noon">☀️ Noon → Team A</option><option value="evening">🌙 Evening → Team B</option></select></label>
+      <label>Event <select id="csEvent"></select></label>
+      <label>Squad <select id="csSlot"><option value="noon">☀️ Noon</option><option value="evening">🌙 Evening</option></select></label>
     </div>
     <div id="csBoard"></div>
   </div>
@@ -291,14 +293,24 @@
 <!-- ============ CS SETUP TAB ============ -->
 <section id="tab-cssetup" style="display:none">
   <div class="panel">
-    <h2>CS squad setup</h2>
-    <p class="help">How many <b>starters</b> and <b>subs</b> each Canyon group takes. Two setups — you pick which applies when
-      you auto-assign. Setting a group's subs equal to its starters gives every starter their own dedicated sub;
-      setting subs to 0 means that group runs without cover. The totals want to match the picked squad
-      (e.g. 20 starters / 10 subs).</p>
+    <h2>Storm squad setup</h2>
+    <p class="help">How many <b>starters</b> and <b>subs</b> each group takes, per game mode. Setting a group's subs equal
+      to its starters gives every starter their own dedicated sub; setting subs to 0 means that group runs without cover.
+      The totals want to match the picked squad (e.g. 20 starters / 10 subs).<br>
+      <b>Kind</b> drives placement: <b>power</b> takes the strongest non-Roamers, <b>mid</b> groups are snake-drafted by
+      power and balanced for T1 spread, and <b>roam</b> takes your designated Roamers first.
+      Have exactly one <b>power</b> and one <b>roam</b> group per setup.</p>
     <div id="csSetupArea"></div>
+  </div>
+  <div class="panel">
+    <h2>Briefing wording</h2>
+    <p class="help">The wording for the <b>Canyon Storm</b> mail and poster. Everything below is yours to edit —
+      the assignments are appended underneath automatically.<br>
+      Desert Storm has no written briefing, so there's nothing to edit here — its poster carries the
+      standing orders and the substitutes list instead.</p>
+    <div id="csBriefArea"></div>
     <div class="row" style="margin-top:14px">
-      <button class="btn ghost admin-only" onclick="csSetupReset()">Reset both to defaults</button>
+      <button class="btn ghost admin-only" onclick="csSetupReset()">Reset setups and wording to defaults</button>
     </div>
   </div>
 </section>
@@ -321,6 +333,49 @@ const CS_DEFAULT_RB=[
   {key:'g5',  name:'Warehouse 3, Warehouse 4 & Serum Factory 2',short:'WH 3 \u00b7 WH 4 \u00b7 SERUM FAC 2',starters:3,subs:3,kind:'mid'},
   {key:'roam',name:'Free-Roamers',                            short:'MOBILE STRIKE',              starters:4, subs:0, kind:'roam'}
 ];
+const CS_DEFAULT_DS=[
+  {key:'loil',  name:'Left Oil',         short:'LEFT OIL',        starters:4, subs:0, kind:'mid'},
+  {key:'roil',  name:'Right Oil',        short:'RIGHT OIL',       starters:4, subs:0, kind:'mid'},
+  {key:'info',  name:'Info Center',      short:'INFO CENTER',     starters:3, subs:0, kind:'mid'},
+  {key:'sci',   name:'Science',          short:'SCIENCE',         starters:3, subs:0, kind:'mid'},
+  {key:'float', name:'Float / Hospital', short:'FLOAT / HOSPITAL',starters:6, subs:0, kind:'roam'}
+];
+/* Briefing wording, editable per mode on the Storm Setup tab.
+   The Canyon text is yours as-is. The Desert text is a first draft
+   built from the Canyon one — check it before you send it out. */
+const CS_BRIEFING_DEFAULTS={
+  canyon:{
+    title:'CANYON STORM',
+    goal:'capture and hold buildings to secure the win',
+    remember:['Personal kills do not win the Canyon — holding territory does.',
+              'If you are a sub who starts, find out who is missing in the plan and take their place.',
+              'Sub at 15mins or before if you are empty.'],
+    objective:'Prioritize capturing and holding buildings.',
+    rules:['Assign yourself to your designated buildings.',
+           'Hold your position at all costs.',
+           'Combine forces if you are outnumbered.',
+           'Ask a roamer for help in chat if needed.'],
+    note:'Better to hold 2 buildings securely than to lose all 4 trying to spread too thin.',
+    posterTag:'CAPTURE · HOLD · DOMINATE',
+    posterFoot1:'30-MIN BATTLE · HOLD TERRITORY TO WIN',
+    posterFoot2:"Kills don't win the Canyon — buildings do. Sub at 15 min or earlier if empty."
+  },
+  desert:{
+    title:'DESERT STORM',
+    // Desert has no written briefing — the poster is the brief.
+    // These are the standing orders off the current poster.
+    subtitle:'USE PLANES',
+    subtitle2:'STICK TO YOUR ASSIGNMENT',
+    goal:'capture and hold your assigned buildings',
+    strategy:["Don't touch the silo until R4 announce",
+              'Reset buildings at 1k points held',
+              'Collect boxes',
+              'Stay in your assigned position unless asked'],
+    posterTag:'',
+    remember:[], rules:[], objective:'', note:'',
+    posterFoot1:'', posterFoot2:''
+  }
+};
 const CS_DEFAULT_DB=[
   {key:'pv',  name:'Power Tower & Virus Lab',                 short:'POWER TOWER \u00b7 VIRUS LAB',     starters:6, subs:2, kind:'power'},
   {key:'d2',  name:'Data Center & Serum Factory',             short:'DATA CENTER \u00b7 SERUM FACTORY', starters:5, subs:3, kind:'mid'},
@@ -342,8 +397,14 @@ function migrate(d){
   d.cs=d.cs||{};
   d.cs.roster=d.cs.roster||CS_SEED.map(p=>({...p}));
   d.cs.roster.forEach(p=>{ if(!Array.isArray(p.aliases)) p.aliases=[]; });
-  d.cs.setups=d.cs.setups||{rulebringers:JSON.parse(JSON.stringify(CS_DEFAULT_RB)),
-                            dawnbreakers:JSON.parse(JSON.stringify(CS_DEFAULT_DB))};
+  d.cs.setups=d.cs.setups||{};
+  d.cs.setups.rulebringers=d.cs.setups.rulebringers||JSON.parse(JSON.stringify(CS_DEFAULT_RB));
+  d.cs.setups.dawnbreakers=d.cs.setups.dawnbreakers||JSON.parse(JSON.stringify(CS_DEFAULT_DB));
+  d.cs.setups.desert     =d.cs.setups.desert     ||JSON.parse(JSON.stringify(CS_DEFAULT_DS));
+  d.cs.briefing=d.cs.briefing||{};
+  ['canyon','desert'].forEach(m=>{
+    d.cs.briefing[m]=Object.assign(JSON.parse(JSON.stringify(CS_BRIEFING_DEFAULTS[m])), d.cs.briefing[m]||{});
+  });
   d.cs.assign=d.cs.assign||{};
   d.cs.lastsub=d.cs.lastsub||{};
   d.settings=d.settings||{banDays:21};
@@ -1632,41 +1693,60 @@ function csSideLabel(groups, side){
    ===================================================================== */
 function csNames(list){ return list.map(p=>p.name).join(', '); }
 
-function csMailText(team, groups, assign, mode){
-  const wa=mode==='whatsapp';
+/* Desert has no written briefing — just the assignments, the standing
+   orders off the poster, and the substitutes pool. */
+function csDesertMail(team, groups, assign, wa, b, B){
+  const L=[];
+  L.push(b(`${B.title} — TEAM ${team}`),'');
+  if(B.subtitle) L.push(b(B.subtitle));
+  if(B.subtitle2) L.push(b(B.subtitle2));
+  L.push('');
+  groups.forEach(g=>{
+    const slot=assign.result[g.key];
+    if(!slot.starters.length) return;
+    L.push(b(g.short.toUpperCase())+': '+csNames(slot.starters));
+  });
+  const bench=[...(assign.benched||[])].sort((a,b2)=>b2.power-a.power);
+  if(bench.length){ L.push('', b('SUBSTITUTES')+': '+csNames(bench)); }
+  if((B.strategy||[]).length){
+    L.push('', b('STRATEGY'));
+    B.strategy.forEach(s=>L.push((wa?'• ':'- ')+s));
+  }
+  return L.join('\n');
+}
+
+function csMailText(team, groups, assign, fmt){
+  const wa=fmt==='whatsapp';
   const b=t=>wa?`*${t}*`:t;
+  const B=db.cs.briefing[assign.gameMode||'canyon'];
+  if((assign.gameMode||'canyon')==='desert') return csDesertMail(team,groups,assign,wa,b,B);
   const dash='—';
-  const db_=assign.allianceKey==='dawnbreakers';
-  const suffix=db_?` ${dash} DAWNBREAKERS${assign.side?` (${assign.side.toUpperCase()})`:''}`:'';
+  const isDB=assign.allianceKey==='dawnbreakers';
+  const suffix=isDB?` ${dash} DAWNBREAKERS${assign.side?` (${assign.side.toUpperCase()})`:''}`:'';
+  const who=assign.teamLabel||`TEAM ${team}`;
   const L=[];
   if(wa){
-    L.push(b(`MISSION BRIEFING: CANYON STORM ${dash} TEAM ${team}${suffix}`),'');
+    L.push(b(`MISSION BRIEFING: ${B.title} ${dash} ${who}${suffix}`),'');
     L.push('Hello Team,','');
-    L.push(`The following is the 1GN tactical plan for CS ${team}${db_?` as Dawnbreakers${assign.side?` (${assign.side})`:''}`:''}. Our primary goal is to capture and hold buildings to secure the win.`,'');
+    L.push(`The following is the 1GN tactical plan for ${who}${isDB?` as Dawnbreakers${assign.side?` (${assign.side})`:''}`:''}. Our primary goal is to ${B.goal}.`,'');
     L.push('Remember:');
-    L.push('(1) Personal kills do not win the Canyon — holding territory does.');
-    L.push('(2) If you are a sub who starts, find out who is missing in the plan and take their place.');
-    L.push('(3) Sub at 15mins or before if you are empty.','');
-    L.push(b('Main Objective:')+' Prioritize capturing and holding buildings.','');
+    B.remember.forEach((r,i)=>L.push(`(${i+1}) ${r}`));
+    L.push('');
+    L.push(b('Main Objective:')+' '+B.objective,'');
     L.push(b('General Rules'));
-    L.push('• Assign yourself to your designated buildings.');
-    L.push('• Hold your position at all costs.');
-    L.push('• Combine forces if you are outnumbered.');
-    L.push('• Ask a roamer for help in chat if needed.','');
-    L.push(b('Strategic Note:')+' Better to hold 2 buildings securely than to lose all 4 trying to spread too thin.','');
+    B.rules.forEach(r=>L.push('• '+r));
+    L.push('');
+    L.push(b('Strategic Note:')+' '+B.note,'');
     L.push(b('ASSIGNMENTS AND TEAMS'),'');
   } else {
-    L.push(`CANYON STORM - TEAM ${team}${db_?` - DAWNBREAKERS${assign.side?` (${assign.side.toUpperCase()})`:''}`:''}`);
-    L.push('Goal: capture and hold buildings to win.','');
+    L.push(`${B.title} - ${who}${isDB?` - DAWNBREAKERS${assign.side?` (${assign.side.toUpperCase()})`:''}`:''}`);
+    L.push(`Goal: ${B.goal}.`,'');
     L.push('REMEMBER');
-    L.push("(1) Kills don't win the Canyon - holding territory does.");
-    L.push("(2) Subs who start: find who's missing in the plan and take their place.");
-    L.push('(3) Sub at 15mins or before if empty.','');
+    B.remember.forEach((r,i)=>L.push(`(${i+1}) ${r}`));
+    L.push('');
     L.push('RULES');
-    L.push('- Hold your assigned buildings at all costs.');
-    L.push('- Combine forces if outnumbered.');
-    L.push('- Ask a roamer for help in chat.');
-    L.push('- Hold 2 securely beats losing all 4.','');
+    B.rules.forEach(r=>L.push('- '+r));
+    L.push('- '+B.note,'');
     L.push('ASSIGNMENTS');
   }
   groups.forEach((g,i)=>{
@@ -1697,19 +1777,27 @@ function csMailText(team, groups, assign, mode){
    ===================================================================== */
 function csPoster(team, groups, assign){
   const T=CS_THEME[team], W=680;
+  const B=db.cs.briefing[assign.gameMode||'canyon'];
   const isDB=assign.allianceKey==='dawnbreakers';
   const stamp=isDB?`DAWNBREAKERS${assign.side?' · '+assign.side.toUpperCase():''}`:'CLASSIFIED';
-  const sub  =isDB?`DAWNBREAKERS${assign.side?' · '+assign.side.toUpperCase():''}`:'LAST WAR · SURVIVAL';
+  const isDesert=(assign.gameMode||'canyon')==='desert';
+  const sub  =isDesert?(B.subtitle||'')
+            :isDB?`DAWNBREAKERS${assign.side?' · '+assign.side.toUpperCase():''}`:'LAST WAR · SURVIVAL';
+  const bench=[...(assign.benched||[])].sort((a,b)=>b.power-a.power);
+  const badgeTop=assign.badgeTop||'TEAM';
+  const badgeVal=assign.badgeVal||team;
+  const badgeSize=badgeVal.length>2?15:24;
   const TOP=330, CW=285, COLS=[40,355];
 
   const card=(g,idx,x,y)=>{
     const slot=assign.result[g.key];
     const isRoam=g.kind==='roam';
+    const namedRoamers=isRoam&&/roam/i.test(g.name);   // Canyon's Free-Roamers vs Desert's Float
     const acc=isRoam?T.accent2:T.accent;
     const fill=isRoam?(team==='A'?'#2a1206':'#2a1c06'):T.panel;
     const bd=isRoam?T.accent2:T.border;
     const paired=g.subs>0;
-    const label=paired?'STARTER ⇄ SUB':(isRoam?'MOBILE STRIKE':'START');
+    const label=paired?'STARTER ⇄ SUB':(namedRoamers?'MOBILE STRIKE':'START');
     const list=slot.starters, n=list.length;
     const twoCol=n>4, rows=Math.max(1,Math.ceil(n/(twoCol?2:1)));
     const LH=19, TOPPAD=88, COLW=130;
@@ -1718,9 +1806,9 @@ function csPoster(team, groups, assign){
     let s=`<g>
 <rect x="${x}" y="${y}" width="${CW}" height="${h}" rx="6" fill="${fill}" stroke="${bd}" stroke-width="1.5"/>
 <rect x="${x}" y="${y}" width="${CW}" height="4" fill="${acc}"/>
-<rect x="${x+14}" y="${y+16}" width="${isRoam?120:86}" height="20" rx="3" fill="${acc}"/>
-<text x="${x+14+(isRoam?60:43)}" y="${y+30}" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="12" letter-spacing="1" fill="#160c05">${isRoam?'FREE ROAMERS':'GROUP '+(idx+1)}</text>
-<text x="${x+14+(isRoam?130:96)}" y="${y+31}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="11" fill="${team==='A'?'#e9c887':'#8fd0e0'}">${csEsc(g.short)}</text>
+<rect x="${x+14}" y="${y+16}" width="${namedRoamers?120:86}" height="20" rx="3" fill="${acc}"/>
+<text x="${x+14+(namedRoamers?60:43)}" y="${y+30}" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="12" letter-spacing="1" fill="#160c05">${namedRoamers?'FREE ROAMERS':'GROUP '+(idx+1)}</text>
+<text x="${x+14+(namedRoamers?130:96)}" y="${y+31}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="11" fill="${team==='A'?'#e9c887':'#8fd0e0'}">${csEsc(g.short)}</text>
 <line x1="${x+14}" y1="${y+48}" x2="${x+CW-14}" y2="${y+48}" stroke="${bd}" stroke-width="1"/>
 <text x="${x+14}" y="${y+70}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="11" letter-spacing="2" fill="${acc}">${label}</text>`;
     list.forEach((p,i)=>{
@@ -1745,7 +1833,8 @@ function csPoster(team, groups, assign){
     if(gR){ const R=card(gR,i*2+1,COLS[1],y); body+=R.svg; h=Math.max(h,R.h); }
     y+=h+16;
   }
-  const H=y+74, footY=y+6;
+  const footH=isDesert?Math.max(112, 46+Math.max((B.strategy||[]).length,Math.ceil(bench.length/2))*19):60;
+  const H=y+footH+14, footY=y+6;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <defs>
 <style>@import url('https://fonts.googleapis.com/css2?family=Black+Ops+One&amp;family=Oswald:wght@400;600;700&amp;display=swap');</style>
@@ -1761,16 +1850,27 @@ function csPoster(team, groups, assign){
 <rect x="0" y="24" width="${W}" height="26" fill="${T.accent2}"/>
 <text x="40" y="42" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="15" letter-spacing="3" fill="#160c05">1GN // MISSION BRIEFING</text>
 <text x="640" y="42" text-anchor="end" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="15" fill="#160c05">${csEsc(stamp)}</text>
-<text x="340" y="152" text-anchor="middle" font-family="'Black Ops One',Impact,sans-serif" font-size="66" letter-spacing="2" fill="${T.ink}">CANYON STORM</text>
+<text x="340" y="152" text-anchor="middle" font-family="'Black Ops One',Impact,sans-serif" font-size="66" letter-spacing="2" fill="${T.ink}">${csEsc(B.title)}</text>
 <text x="340" y="182" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="17" letter-spacing="${isDB?6:8}" fill="${T.accent}">${csEsc(sub)}</text>
+${isDesert&&B.subtitle2?`<text x="340" y="202" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="13" letter-spacing="3" fill="${T.muted}">${csEsc(B.subtitle2)}</text>`:''}
 <polygon points="340,206 372,224 372,260 340,278 308,260 308,224" fill="${T.accent2}" stroke="${T.accent}" stroke-width="2"/>
-<text x="340" y="238" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="12" letter-spacing="3" fill="#160c05">TEAM</text>
-<text x="340" y="264" text-anchor="middle" font-family="'Black Ops One',Impact,sans-serif" font-size="24" fill="#160c05">${team}</text>
-<text x="340" y="304" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="18" letter-spacing="4" fill="${T.accent}">CAPTURE · HOLD · DOMINATE</text>
+<text x="340" y="238" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="12" letter-spacing="3" fill="#160c05">${csEsc(badgeTop)}</text>
+<text x="340" y="264" text-anchor="middle" font-family="'Black Ops One',Impact,sans-serif" font-size="${badgeSize}" fill="#160c05">${csEsc(badgeVal)}</text>
+${B.posterTag?`<text x="340" y="304" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="18" letter-spacing="4" fill="${T.accent}">${csEsc(B.posterTag)}</text>`:''}
 ${body}
+${isDesert?`
+<rect x="40" y="${footY}" width="600" height="${footH}" rx="6" fill="${T.sky1}" stroke="${T.border}" stroke-width="1"/>
+<line x1="392" y1="${footY+12}" x2="392" y2="${footY+footH-12}" stroke="${T.border}" stroke-width="1"/>
+<text x="60" y="${footY+28}" font-family="'Black Ops One',Impact,sans-serif" font-size="20" letter-spacing="1" fill="${T.ink}">STRATEGY</text>
+${(B.strategy||[]).map((s,i)=>`<text x="60" y="${footY+54+i*19}" font-family="Oswald,'Arial Narrow',sans-serif" font-size="13" fill="${T.muted}">${csEsc(s)}</text>`).join('\n')}
+<text x="412" y="${footY+28}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="15" letter-spacing="2" fill="${T.accent}">SUBSTITUTES</text>
+${bench.map((p,i)=>{const col=Math.floor(i/Math.ceil(bench.length/2)),row=i%Math.ceil(bench.length/2);
+  return `<text x="${412+col*110}" y="${footY+52+row*19}" font-family="Oswald,'Arial Narrow',sans-serif" font-size="13" fill="${T.ink}">${csEsc(p.name)}</text>`;}).join('\n')}
+`:`
 <rect x="40" y="${footY}" width="600" height="60" rx="6" fill="${T.sky1}" stroke="${T.border}" stroke-width="1"/>
-<text x="60" y="${footY+26}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="14" letter-spacing="1" fill="${T.accent}">30-MIN BATTLE · HOLD TERRITORY TO WIN</text>
-<text x="60" y="${footY+48}" font-family="Oswald,'Arial Narrow',sans-serif" font-size="13" fill="${T.muted}">Kills don't win the Canyon — buildings do. Sub at 15 min or earlier if empty.</text>
+<text x="60" y="${footY+26}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="14" letter-spacing="1" fill="${T.accent}">${csEsc(B.posterFoot1)}</text>
+<text x="60" y="${footY+48}" font-family="Oswald,'Arial Narrow',sans-serif" font-size="13" fill="${T.muted}">${csEsc(B.posterFoot2)}</text>
+`}
 </svg>`;
 }
 
@@ -1995,14 +2095,16 @@ window.csUnlink=(id,alias)=>{
    ===================================================================== */
 let csSel=null;                       // currently tapped player id (for swaps)
 const csTeamOf=slot=>slot==='noon'?'A':'B';
+// Canyon runs as Team A / Team B; Desert keeps the real Noon / Evening slots.
+const csLabels=(mode,slot)=>({team:'TEAM '+csTeamOf(slot), badgeTop:'TEAM', badgeVal:csTeamOf(slot)});
 
 function renderCsBuildTab(){
   const sel=document.getElementById('csEvent'); if(!sel) return;
   const prev=sel.value;
-  const evs=db.events.filter(e=>e.mode==='canyon').sort((a,b)=>a.date<b.date?1:-1);
+  const evs=[...db.events].sort((a,b)=>a.date<b.date?1:-1);
   sel.innerHTML=evs.length
-    ? evs.map(e=>`<option value="${e.id}">${e.date}</option>`).join('')
-    : '<option value="">No saved Canyon events yet</option>';
+    ? evs.map(e=>`<option value="${e.id}">${MODES[e.mode]} — ${e.date}</option>`).join('')
+    : '<option value="">No saved events yet</option>';
   if(prev&&evs.some(e=>String(e.id)===prev)) sel.value=prev;
   renderCsBuild();
 }
@@ -2013,11 +2115,12 @@ function csCtx(){
   const ev=db.events.find(e=>String(e.id)===evId);
   if(!ev) return null;
   const team=csTeamOf(slot);
+  const lab=csLabels(ev.mode,slot);
   const picked=(ev.teams[slot]||[]).map(m=>{
     const a=csAttrs(m.name);
     return {...a, name:m.name, role:m.role==='starter'?'Starter':'Sub'};
   });
-  return {ev,slot,team,picked};
+  return {ev,slot,team,picked,mode:ev.mode,lab};
 }
 
 function renderCsBuild(){
@@ -2025,10 +2128,10 @@ function renderCsBuild(){
   const ctx=csCtx();
   const exp=document.getElementById('csExport');
   if(!ctx){
-    board.innerHTML='<p class="muted">Save a <b>Canyon Storm</b> event on the New Event tab first — its picked players appear here.</p>';
+    board.innerHTML='<p class="muted">Save an event on the New Event tab first — its picked players appear here.</p>';
     exp.style.display='none'; return;
   }
-  const {ev,slot,team,picked}=ctx;
+  const {ev,slot,team,picked,mode,lab}=ctx;
   if(!picked.length){
     board.innerHTML='<p class="muted">This squad is empty for that event.</p>';
     exp.style.display='none'; return;
@@ -2052,7 +2155,7 @@ function renderCsBuild(){
     ⚠ <b>${noPower.length} player(s) have no power set</b> — ${noPower.map(p=>csEsc(p.name)).join(', ')}.
     They'll sort to the bottom of the draft. Set their power on the <b>CS Players</b> tab.</div>`;
 
-  const setup=db.cs.setups[A?A.allianceKey:'rulebringers']||CS_DEFAULT_RB;
+  const setup=db.cs.setups[A?A.setupKey:(mode==='desert'?'desert':'rulebringers')]||CS_DEFAULT_RB;
   const needS=setup.reduce((s,g)=>s+g.starters,0), needB=setup.reduce((s,g)=>s+g.subs,0);
   let mismatch='';
   if(!A&&(starters!==needS||subs<needB))
@@ -2062,10 +2165,11 @@ function renderCsBuild(){
 
   board.innerHTML=`${warn}${mismatch}
     <div class="row">
-      <span class="badge ${team==='A'?'b-guar':'b-noon'}" style="font-size:13px;padding:4px 12px">TEAM ${team}</span>
+      <span class="badge ${team==='A'?'b-guar':'b-noon'}" style="font-size:13px;padding:4px 12px">${lab.team}</span>
+      <span class="badge b-wait">${MODES[mode]}</span>
       <span class="muted">${picked.length} picked · ${starters} starters · ${subs} subs</span>
       <span style="flex:1"></span>
-      <button class="btn ${team==='A'?'gold':''} admin-only" onclick="csAskAlliance()">⚡ ${A?'Re-assign':'Auto-assign'} Team ${team}</button>
+      <button class="btn ${team==='A'?'gold':''} admin-only" onclick="csAskAlliance()">⚡ ${A?'Re-assign':'Auto-assign'} ${lab.team}</button>
       ${A?`<button class="btn ghost admin-only" onclick="csClear()">✕ Clear line-up</button>`:''}
     </div>
     ${A?csLineupHtml(A,team):'<p class="help">Hit auto-assign to place these players into their groups and pair up the subs.</p>'}`;
@@ -2098,6 +2202,8 @@ function csLineupHtml(A,team){
 }
 
 window.csAskAlliance=()=>{
+  const ctx=csCtx(); if(!ctx) return;
+  if(ctx.mode==='desert'){ csRun('desert',null); return; }   // no 2v1 split in Desert
   const wrap=document.createElement('div'); wrap.className='modal';
   wrap.innerHTML=`<div class="box"><h3>Which side are we this week?</h3>
     <p class="help">Canyon Storm is 2 alliances vs 1. Pick which we are.</p>
@@ -2116,14 +2222,21 @@ window.csAskAlliance=()=>{
   };
 };
 
-function csRun(allianceKey, side){
+function csRun(setupKey, side){
   const ctx=csCtx(); if(!ctx) return;
   const roles={}; ctx.picked.forEach(p=>roles[p.id]=p.role);
-  const groups=csSideLabel(db.cs.setups[allianceKey]||CS_DEFAULT_RB, allianceKey==='dawnbreakers'?side:null);
+  const groups=csSideLabel(db.cs.setups[setupKey]||CS_DEFAULT_RB, setupKey==='dawnbreakers'?side:null);
   const res=csPlace(ctx.picked, groups, db.cs.lastsub, roles);
-  db.cs.assign[ctx.ev.id+'|'+ctx.slot]={...res, groups, alliance:CS_ALLIANCE_LABEL[allianceKey], allianceKey, side:allianceKey==='dawnbreakers'?side:null};
+  db.cs.assign[ctx.ev.id+'|'+ctx.slot]={
+    ...res, groups, setupKey,
+    gameMode:ctx.mode,
+    teamLabel:ctx.lab.team, badgeTop:ctx.lab.badgeTop, badgeVal:ctx.lab.badgeVal,
+    alliance:CS_ALLIANCE_LABEL[setupKey]||MODES[ctx.mode],
+    allianceKey:setupKey,
+    side:setupKey==='dawnbreakers'?side:null
+  };
   csSel=null; save(); renderCsBuild();
-  toast(`Team ${ctx.team} assigned`);
+  toast(`${ctx.lab.team} assigned`);
 }
 
 window.csClear=()=>{
@@ -2236,39 +2349,99 @@ window.csLogSubs=()=>{
    ===================================================================== */
 function renderCsSetup(){
   const el=document.getElementById('csSetupArea'); if(!el) return;
+  const KINDS=[['power','Strongest non-Roamers go here'],
+               ['mid','Snake-drafted by power, balanced for T1'],
+               ['roam','Roamers go here first, then Flex, then Holders']];
   const block=(which,title,note)=>{
     const gs=db.cs.setups[which];
     const tS=gs.reduce((s,g)=>s+g.starters,0), tB=gs.reduce((s,g)=>s+g.subs,0);
-    return `<h3>${title} <span class="muted" style="font-weight:400;font-size:12px">${note}</span></h3>
-      <table><thead><tr><th>Group</th><th>Kind</th><th style="width:90px">Starters</th><th style="width:90px">Subs</th></tr></thead><tbody>
+    const kinds=k=>KINDS.map(([v,d])=>`<option value="${v}"${v===k?' selected':''} title="${d}">${v}</option>`).join('');
+    return `<h3 style="margin-top:18px">${title} <span class="muted" style="font-weight:400;font-size:12px">${note}</span></h3>
+      <table><thead><tr><th>Group</th><th style="width:90px">Kind</th><th style="width:80px">Starters</th><th style="width:80px">Subs</th><th></th></tr></thead><tbody>
       ${gs.map((g,i)=>`<tr>
         <td><input value="${csEsc(g.name)}" style="width:100%" onchange="csSetupEdit('${which}',${i},'name',this.value)">
             <input value="${csEsc(g.short)}" style="width:100%;margin-top:4px;font-size:11px;color:var(--muted)" onchange="csSetupEdit('${which}',${i},'short',this.value)"></td>
-        <td><span class="badge ${g.kind==='roam'?'b-noon':g.kind==='power'?'b-guar':'b-wait'}">${g.kind}</span></td>
-        <td><input type="number" min="0" max="8" value="${g.starters}" style="width:70px" onchange="csSetupEdit('${which}',${i},'starters',+this.value)"></td>
-        <td><input type="number" min="0" max="8" value="${g.subs}" style="width:70px" onchange="csSetupEdit('${which}',${i},'subs',+this.value)"></td>
+        <td><select class="admin-only" style="width:80px" onchange="csSetupEdit('${which}',${i},'kind',this.value)">${kinds(g.kind)}</select></td>
+        <td><input type="number" min="0" max="12" value="${g.starters}" style="width:66px" onchange="csSetupEdit('${which}',${i},'starters',+this.value)"></td>
+        <td><input type="number" min="0" max="12" value="${g.subs}" style="width:66px" onchange="csSetupEdit('${which}',${i},'subs',+this.value)"></td>
+        <td><button class="mini admin-only" title="Remove this group" onclick="csSetupDel('${which}',${i})">🗑</button></td>
       </tr>`).join('')}
-      <tr><td colspan="2" class="muted">Total</td><td><b>${tS}</b></td><td><b>${tB}</b></td></tr>
+      <tr><td colspan="2" class="muted">Total</td>
+          <td><b>${tS}</b></td><td><b>${tB}</b></td>
+          <td><button class="mini admin-only" title="Add a group" onclick="csSetupAdd('${which}')">+</button></td></tr>
       </tbody></table>`;
   };
-  el.innerHTML=block('rulebringers','Rulebringers',"when we're the lone alliance")
-             +'<div style="height:18px"></div>'
-             +block('dawnbreakers','Dawnbreakers',"when we're one of the pair — mid groups get a Left/Right label at assign time");
+  el.innerHTML=
+      block('desert','Desert Storm',"one setup — Desert isn't a 2v1")
+    + block('rulebringers','Canyon · Rulebringers',"when we're the lone alliance")
+    + block('dawnbreakers','Canyon · Dawnbreakers',"when we're one of the pair — mid groups get a Left/Right label at assign time");
+  renderCsBriefing();
 }
-window.csSetupEdit=(which,i,field,val)=>{
-  db.cs.setups[which][i][field]=val; save();
-  if(field==='starters'||field==='subs') renderCsSetup();
+
+/* ---- briefing wording, per mode ------------------------------------- */
+function renderCsBriefing(){
+  const el=document.getElementById('csBriefArea'); if(!el) return;
+  const ta=(m,f,rows,label,hint)=>{
+    const v=db.cs.briefing[m][f];
+    const val=Array.isArray(v)?v.join('\n'):v;
+    return `<label class="muted" style="font-size:12px;display:block;margin-top:8px">${label}
+      ${hint?`<span style="opacity:.7">— ${hint}</span>`:''}</label>
+      <textarea style="width:100%;min-height:${rows*22}px;font-size:13px"
+        onchange="csBriefEdit('${m}','${f}',this.value)">${csEsc(val)}</textarea>`;
+  };
+  const block=(m,title,warn)=>`<h3 style="margin-top:18px">${title}</h3>
+    ${warn?`<div class="banner warn" style="margin:0 0 8px">${warn}</div>`:''}
+    ${ta(m,'title',1,'Poster headline')}
+    ${ta(m,'goal',1,'Goal','finishes the sentence "Our primary goal is to …"')}
+    ${ta(m,'remember',3,'Remember','one per line, numbered automatically')}
+    ${ta(m,'objective',1,'Main objective')}
+    ${ta(m,'rules',4,'General rules','one per line, bulleted automatically')}
+    ${ta(m,'note',2,'Strategic note')}
+    ${ta(m,'posterTag',1,'Poster tagline')}
+    ${ta(m,'posterFoot1',1,'Poster footer — headline')}
+    ${ta(m,'posterFoot2',2,'Poster footer — small print')}`;
+  el.innerHTML=block('canyon','Canyon Storm briefing','');
+}
+
+window.csBriefEdit=(m,f,val)=>{
+  const cur=db.cs.briefing[m][f];
+  db.cs.briefing[m][f]=Array.isArray(cur)
+    ? val.split('\n').map(s=>s.trim()).filter(Boolean)
+    : val.trim();
+  save(); toast('Saved');
 };
+window.csSetupAdd=which=>{
+  db.cs.setups[which].push({key:'g'+csUid(),name:'New group',short:'NEW GROUP',starters:3,subs:0,kind:'mid'});
+  save(); renderCsSetup();
+};
+window.csSetupDel=(which,i)=>{
+  const g=db.cs.setups[which][i];
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box"><h3>Remove group?</h3>
+    <p class="help">Remove <b>${csEsc(g.name)}</b> from this setup? Line-ups you've already built are not affected.</p>
+    <div class="row" style="margin:12px 0 0"><button class="btn warn" id="gdY">Remove</button>
+    <button class="btn ghost" id="gdN">Cancel</button></div></div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#gdN').onclick=()=>wrap.remove();
+  wrap.querySelector('#gdY').onclick=()=>{
+    db.cs.setups[which].splice(i,1); save(); wrap.remove(); renderCsSetup();
+  };
+};
+
 window.csSetupReset=()=>{
   const wrap=document.createElement('div'); wrap.className='modal';
   wrap.innerHTML=`<div class="box"><h3>Reset squad setup?</h3>
-    <p class="help">Reset both alliance setups to the defaults? Existing line-ups are not affected.</p>
+    <p class="help">Reset all three group setups <b>and the briefing wording</b> back to the defaults?
+     Existing line-ups are not affected.</p>
     <div class="row" style="margin:12px 0 0"><button class="btn warn" id="crY">Reset</button>
     <button class="btn ghost" id="crN">Cancel</button></div></div>`;
   document.body.appendChild(wrap);
   wrap.querySelector('#crN').onclick=()=>wrap.remove();
   wrap.querySelector('#crY').onclick=()=>{
-    db.cs.setups={rulebringers:JSON.parse(JSON.stringify(CS_DEFAULT_RB)),dawnbreakers:JSON.parse(JSON.stringify(CS_DEFAULT_DB))};
+    db.cs.setups={rulebringers:JSON.parse(JSON.stringify(CS_DEFAULT_RB)),
+                  dawnbreakers:JSON.parse(JSON.stringify(CS_DEFAULT_DB)),
+                  desert:JSON.parse(JSON.stringify(CS_DEFAULT_DS))};
+    db.cs.briefing=JSON.parse(JSON.stringify(CS_BRIEFING_DEFAULTS));
     save(); wrap.remove(); renderCsSetup(); toast('Reset to defaults');
   };
 };
@@ -2298,7 +2471,7 @@ document.getElementById('csImport').onchange=e=>{
   r.readAsText(f); e.target.value='';
 };
 
-for(const n of ['csEdit','csDelete','csPullRoster','csAskAlliance','csClear','csSetupEdit','csSetupReset','csLogSubs','csOpenLink','csUnlink']){
+for(const n of ['csEdit','csDelete','csPullRoster','csAskAlliance','csClear','csSetupEdit','csSetupReset','csLogSubs','csOpenLink','csUnlink','csSetupAdd','csSetupDel','csBriefEdit']){
   const f=window[n];
   if(typeof f==='function') window[n]=function(){
     if(!isAdmin()){ toast('View only — log in as admin to make changes','err'); return; }
