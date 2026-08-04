@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Storm Manager — Last War</title>
+<script src="config.js"></script>
 <style>
   :root{
     --bg:#12151c; --panel:#1b202b; --panel2:#232a38; --border:#323b4d;
@@ -64,6 +65,28 @@
   code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:12px}
   .team-col{flex:1;min-width:300px}
   .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:5px}
+  /* ---- auth / read-only ---- */
+  .authbar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);width:100%;justify-content:flex-end}
+  #modeBanner{padding:0 22px}
+  .banner{margin:10px 0 0;padding:9px 14px;border-radius:9px;font-size:13px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .banner.view{background:#1d2433;border:1px solid var(--border);color:var(--muted)}
+  .banner.warn{background:#3a2f10;border:1px solid #6b5316;color:var(--accent)}
+  body.viewonly .admin-only{display:none !important}
+  .modal{position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:200}
+  .modal .box{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:22px;width:min(380px,92vw)}
+  .modal h3{margin:0 0 12px;color:var(--accent)}
+  .modal input{width:100%;margin-bottom:10px}
+  /* ---- squad board ---- */
+  .obj-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+  .obj{background:var(--panel2);border:1px solid var(--border);border-radius:11px;padding:12px}
+  .obj h4{margin:0 0 8px;font-size:13px;color:var(--accent);display:flex;justify-content:space-between;gap:8px;align-items:center}
+  .obj ul{list-style:none;margin:0;padding:0}
+  .obj li{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #2a3140;font-size:13px}
+  .obj li:last-child{border-bottom:none}
+  .obj .cap{font-size:11px;color:var(--muted)}
+  .pool{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{background:var(--panel2);border:1px solid var(--border);border-radius:20px;padding:4px 10px;font-size:12px;display:flex;align-items:center;gap:6px}
+  .chip select{padding:1px 4px;font-size:11px;border-radius:5px}
 </style>
 </head>
 <body>
@@ -74,11 +97,14 @@
   </div>
   <nav>
     <button data-tab="event" class="active">New Event</button>
+    <button data-tab="squads">Squad Setup</button>
     <button data-tab="roster">Roster</button>
     <button data-tab="history">History &amp; Attendance</button>
     <button data-tab="settings">Data / Settings</button>
   </nav>
+  <div id="authBar" class="authbar"></div>
 </header>
+<div id="modeBanner"></div>
 <main>
 
 <!-- ============ NEW EVENT TAB ============ -->
@@ -123,6 +149,30 @@
       <button class="btn ghost" id="btnCopyTeams" style="display:none">Copy roster text</button>
     </div>
     <div id="assignResult"></div>
+  </div>
+</section>
+
+<!-- ============ SQUAD SETUP TAB ============ -->
+<section id="tab-squads" style="display:none">
+  <div class="panel">
+    <h2>Squad setup</h2>
+    <p class="help">Assign your picked players to battlefield objectives. Pick a saved event, then send each player to a group — starters and subs carry over from the team assignment, and each objective shows its capture value. Export a briefing to paste into in-game mail or Discord, or download a poster image.</p>
+    <div class="row">
+      <label>Event <select id="sqEvent"></select></label>
+      <label>Squad <select id="sqTeam"><option value="noon">☀️ Noon</option><option value="evening">🌙 Evening</option></select></label>
+      <button class="btn ghost admin-only" id="sqReset">Reset assignments</button>
+      <button class="btn ghost admin-only" id="sqAddObj">+ Add objective</button>
+    </div>
+    <div id="sqBoard"></div>
+  </div>
+  <div class="panel" id="sqExportPanel" style="display:none">
+    <h2>Briefing</h2>
+    <div class="row">
+      <button class="btn" id="sqCopy">📋 Copy briefing text</button>
+      <button class="btn ghost" id="sqPoster">🖼 Download poster (SVG)</button>
+      <button class="btn ghost" id="sqCsv">⬇ Export squads CSV</button>
+    </div>
+    <textarea id="sqPreview" readonly style="min-height:220px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px"></textarea>
   </div>
 </section>
 
@@ -253,7 +303,108 @@ function recomputeDerived(){
   }
   save();
 }
-function save(){ localStorage.setItem(LS_KEY, JSON.stringify(db)); }
+/* ================= cloud sync (Supabase) ================= */
+const CFG=(typeof window!=='undefined'&&window.CS_CONFIG)||{};
+const SB_URL=String(CFG.SUPABASE_URL||'').trim().replace(/\/+$/,'');
+const SB_KEY=String(CFG.SUPABASE_ANON_KEY||CFG.SUPABASE_KEY||'').trim();
+const CLOUD=!!(SB_URL&&SB_KEY);
+const ROW_KEY='storm_manager';
+let auth={token:null,refresh:null,email:null};
+try{ const s=JSON.parse(localStorage.getItem('sm_session')||'null'); if(s&&s.token) auth=s; }catch(e){}
+const isAdmin=()=>!CLOUD||!!auth.token;   // standalone (no cloud) = full access
+let saveTimer=null, lastPush=null;
+
+function sbHeaders(json){
+  const h={apikey:SB_KEY,Authorization:'Bearer '+(auth.token||SB_KEY)};
+  if(json) h['Content-Type']='application/json';
+  return h;
+}
+async function cloudLoad(){
+  const r=await fetch(`${SB_URL}/rest/v1/kv?key=eq.${ROW_KEY}&select=value`,{headers:sbHeaders()});
+  if(!r.ok) throw new Error('load '+r.status);
+  const rows=await r.json();
+  return rows.length?rows[0].value:null;
+}
+async function cloudSave(){
+  const body=JSON.stringify([{key:ROW_KEY,value:db,updated_at:new Date().toISOString()}]);
+  const r=await fetch(`${SB_URL}/rest/v1/kv?on_conflict=key`,{
+    method:'POST',headers:{...sbHeaders(true),Prefer:'resolution=merge-duplicates,return=minimal'},body});
+  if(!r.ok){ const t=await r.text(); throw new Error(t||('save '+r.status)); }
+  lastPush=new Date();
+}
+let suppressSave=false;
+function save(){
+  try{ localStorage.setItem(LS_KEY, JSON.stringify(db)); }catch(e){}
+  if(suppressSave||!CLOUD||!auth.token) return;   // viewers never write
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(()=>{ cloudSave().then(renderAuthBar).catch(e=>toast('Cloud save failed: '+e.message,'err')); },600);
+}
+async function signIn(email,password){
+  const r=await fetch(`${SB_URL}/auth/v1/token?grant_type=password`,{
+    method:'POST',headers:{apikey:SB_KEY,'Content-Type':'application/json'},
+    body:JSON.stringify({email:String(email).trim().toLowerCase(),password})});
+  const j=await r.json();
+  if(!r.ok||!j.access_token) throw new Error(j.error_description||j.msg||j.message||'Login failed');
+  auth={token:j.access_token,refresh:j.refresh_token,email:(j.user&&j.user.email)||email};
+  localStorage.setItem('sm_session',JSON.stringify(auth));
+}
+async function refreshSession(){
+  if(!CLOUD||!auth.refresh) return false;
+  try{
+    const r=await fetch(`${SB_URL}/auth/v1/token?grant_type=refresh_token`,{
+      method:'POST',headers:{apikey:SB_KEY,'Content-Type':'application/json'},
+      body:JSON.stringify({refresh_token:auth.refresh})});
+    const j=await r.json();
+    if(!r.ok||!j.access_token) return false;
+    auth={token:j.access_token,refresh:j.refresh_token,email:auth.email};
+    localStorage.setItem('sm_session',JSON.stringify(auth));
+    return true;
+  }catch(e){ return false; }
+}
+function signOut(){ auth={token:null,refresh:null,email:null}; localStorage.removeItem('sm_session'); applyAccess(); renderAuthBar(); toast('Logged out — view only'); }
+
+function applyAccess(){ document.body.classList.toggle('viewonly', CLOUD && !auth.token); }
+function renderAuthBar(){
+  const el=document.getElementById('authBar'); if(!el) return;
+  if(!CLOUD){ el.innerHTML='<span>💾 Local device only</span>'; return; }
+  el.innerHTML=auth.token
+    ? `<span>🔓 Admin · ${esc(auth.email||'')}${lastPush?' · saved '+lastPush.toLocaleTimeString():''}</span> <button class="mini" onclick="signOut()">Log out</button>`
+    : `<span>👁 View only</span> <button class="mini" onclick="showLogin()">Admin login</button>`;
+  const b=document.getElementById('modeBanner');
+  if(b) b.innerHTML=auth.token?'':'<div class="banner view">👁 <b>View-only mode.</b> You can browse teams, rosters and history. Log in as admin to import applications, assign teams or edit attendance.</div>';
+}
+window.showLogin=()=>{
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box"><h3>Admin login</h3>
+    <input id="liEmail" type="email" placeholder="email" autocomplete="username">
+    <input id="liPass" type="password" placeholder="password" autocomplete="current-password">
+    <div class="row" style="margin:12px 0 0"><button class="btn" id="liGo">Log in</button>
+    <button class="btn ghost" id="liX">Cancel</button><span class="muted" id="liMsg"></span></div></div>`;
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{ if(e.target===wrap) close(); };
+  wrap.querySelector('#liX').onclick=close;
+  const go=async()=>{
+    const m=wrap.querySelector('#liMsg'); m.textContent='…';
+    try{
+      await signIn(wrap.querySelector('#liEmail').value,wrap.querySelector('#liPass').value);
+      close(); applyAccess(); renderAuthBar(); await pullCloud(); toast('Logged in as admin');
+    }catch(e){ m.textContent=e.message; }
+  };
+  wrap.querySelector('#liGo').onclick=go;
+  wrap.querySelector('#liPass').onkeydown=e=>{ if(e.key==='Enter') go(); };
+  wrap.querySelector('#liEmail').focus();
+};
+async function pullCloud(){
+  if(!CLOUD) return;
+  try{
+    const v=await cloudLoad();
+    if(v&&v.players){ db=migrate(v); try{localStorage.setItem(LS_KEY,JSON.stringify(db));}catch(e){} }
+    suppressSave=true; recomputeDerived(); suppressSave=false;   // no echo-write on load
+    if(!v&&auth.token&&Object.keys(db.players).length) await cloudSave(); // seed empty cloud from this device
+    renderRoster(); renderEvents(); renderSquadTab(); renderAuthBar();
+  }catch(e){ toast('Could not load shared data: '+e.message,'err'); }
+}
 function toast(msg,err){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2600); }
 const MODES={desert:'Desert Storm',canyon:'Canyon Storm'};
 const norm=s=>s.trim().toLowerCase();
@@ -330,6 +481,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('main > section').forEach(s=>s.style.display='none');
   document.getElementById('tab-'+b.dataset.tab).style.display='';
   if(b.dataset.tab==='roster') renderRoster();
+  if(b.dataset.tab==='squads') renderSquadTab();
   if(b.dataset.tab==='history') renderEvents();
   if(b.dataset.tab==='settings') document.getElementById('setBanDays').value=db.settings.banDays;
 });
@@ -739,7 +891,7 @@ function renderEvents(){
       <table><tr><th>Date</th><th>Size</th><th>Status</th><th></th></tr>${list}</table>`;
   }
   document.getElementById('eventList').innerHTML=html||'<p class="muted">No events yet.</p>';
-  renderGrid();
+  renderGrid(); renderSquadTab();
 }
 window.delEvent=id=>{
   if(!confirm('Delete this event?\n\nAll its effects are removed: selections, last picked/started/applied dates, no-show counts and bans from this event are recalculated as if it never happened.'))return;
@@ -864,6 +1016,210 @@ window.exportGrid=mode=>{
   download(`${mode}-history-grid.csv`,csv,'text/csv');
 };
 
+/* ================= squad setup ================= */
+const OBJ_DEFAULTS={
+  canyon:[
+    {name:'Data Center 1 & Serum Factory 1',cap:6},
+    {name:'Data Center 2 & Defense System 2',cap:6},
+    {name:'Warehouse 1, Warehouse 2 & Def. System 1',cap:5},
+    {name:'Warehouse 3, Warehouse 4 & Serum Factory 2',cap:5},
+    {name:'Power Tower & Virus Lab',cap:6},
+    {name:'Free-Roamers',cap:0},
+    {name:'Mobile Strike',cap:0}
+  ],
+  desert:[
+    {name:'Nuclear Silo (centre)',cap:8},
+    {name:'Arsenal (centre)',cap:5},
+    {name:'Mercenary Factory (centre)',cap:5},
+    {name:'Left buildings',cap:4},
+    {name:'Right buildings',cap:4},
+    {name:'Oil Fields (20 min)',cap:0},
+    {name:'Free-Roamers',cap:0},
+    {name:'Mobile Strike',cap:0}
+  ]
+};
+function squadKey(evId,slot){ return evId+'|'+slot; }
+function getSquad(ev,slot){
+  db.squads=db.squads||{};
+  const k=squadKey(ev.id,slot);
+  if(!db.squads[k]) db.squads[k]={groups:OBJ_DEFAULTS[ev.mode].map((o,i)=>({id:'g'+i,name:o.name,cap:o.cap,members:[]}))};
+  const s=db.squads[k];
+  // drop players no longer in this squad; keep the rest
+  const valid=new Set(ev.teams[slot].map(m=>norm(m.name)));
+  for(const g of s.groups) g.members=g.members.filter(n=>valid.has(norm(n)));
+  return s;
+}
+function currentSquadCtx(){
+  const evSel=document.getElementById('sqEvent'), slot=document.getElementById('sqTeam').value;
+  const ev=db.events.find(e=>String(e.id)===evSel.value);
+  return ev?{ev,slot,sq:getSquad(ev,slot)}:null;
+}
+function renderSquadTab(){
+  const sel=document.getElementById('sqEvent'); if(!sel) return;
+  const prev=sel.value;
+  const evs=[...db.events].sort((a,b)=>a.date<b.date?1:-1);
+  sel.innerHTML=evs.length?evs.map(e=>`<option value="${e.id}">${MODES[e.mode]} — ${e.date}</option>`).join('')
+                          :'<option value="">No saved events yet</option>';
+  if(prev&&evs.some(e=>String(e.id)===prev)) sel.value=prev;
+  renderSquadBoard();
+}
+function renderSquadBoard(){
+  const board=document.getElementById('sqBoard'); if(!board) return;
+  const ctx=currentSquadCtx();
+  if(!ctx){ board.innerHTML='<p class="muted">Save an event on the New Event tab first — its picked players appear here.</p>';
+            document.getElementById('sqExportPanel').style.display='none'; return; }
+  const {ev,slot,sq}=ctx;
+  const roster=ev.teams[slot];
+  if(!roster.length){ board.innerHTML='<p class="muted">This squad is empty.</p>';
+                      document.getElementById('sqExportPanel').style.display='none'; return; }
+  const assigned=new Set(); sq.groups.forEach(g=>g.members.forEach(n=>assigned.add(norm(n))));
+  const unassigned=roster.filter(m=>!assigned.has(norm(m.name)));
+  const roleOf=n=>{ const m=roster.find(x=>norm(x.name)===norm(n)); return m?m.role:'sub'; };
+  const roleBadge=n=>roleOf(n)==='starter'?'<span class="badge b-start">STA</span>':'<span class="badge b-sub">SUB</span>';
+  const groupOpts=(cur)=>sq.groups.map(g=>`<option value="${g.id}" ${g.id===cur?'selected':''}>${esc(g.name)}</option>`).join('');
+
+  const cards=sq.groups.map((g,gi)=>`<div class="obj">
+      <h4><span>${esc(g.name)}</span><span class="cap">${g.members.length}${g.cap?'/'+g.cap:''}</span></h4>
+      <ul>${g.members.map((n,mi)=>`<li><span>${roleBadge(n)} ${esc(n)}</span>
+        <span class="admin-only"><select onchange="sqMove(${gi},${mi},this.value)">${groupOpts(g.id)}<option value="__un">— unassign —</option></select></span></li>`).join('')
+        ||'<li class="muted">empty</li>'}</ul>
+      <div class="row admin-only" style="margin:8px 0 0">
+        <button class="mini" onclick="sqRename(${gi})">rename</button>
+        <button class="mini" onclick="sqSetCap(${gi})">target size</button>
+        <button class="mini" onclick="sqDelObj(${gi})">🗑</button>
+      </div></div>`).join('');
+
+  board.innerHTML=`
+    <h3>Unassigned — ${unassigned.length} of ${roster.length}</h3>
+    <div class="pool">${unassigned.map(m=>`<span class="chip">${m.role==='starter'?'<span class="badge b-start">STA</span>':'<span class="badge b-sub">SUB</span>'} ${esc(m.name)}
+      <span class="admin-only"><select onchange="sqAssign('${esc(m.name).replace(/'/g,"&#39;")}',this.value)"><option value="">assign…</option>${sq.groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select></span></span>`).join('')
+      ||'<span class="muted">Everyone is assigned ✔</span>'}
+    <div class="row admin-only" style="margin:10px 0 0"><button class="btn" onclick="sqAutoFill()">⚡ Auto-fill by target size</button></div>
+    <h3 style="margin-top:16px">Objectives</h3>
+    <div class="obj-grid">${cards}</div>`;
+  document.getElementById('sqExportPanel').style.display='';
+  document.getElementById('sqPreview').value=briefingText(ev,slot,sq);
+}
+window.sqAssign=(name,gid)=>{
+  if(!gid) return; const ctx=currentSquadCtx(); if(!ctx) return;
+  const g=ctx.sq.groups.find(x=>x.id===gid); if(!g) return;
+  g.members.push(name); save(); renderSquadBoard();
+};
+window.sqMove=(gi,mi,gid)=>{
+  const ctx=currentSquadCtx(); if(!ctx) return;
+  const name=ctx.sq.groups[gi].members.splice(mi,1)[0];
+  if(gid!=='__un'){ const g=ctx.sq.groups.find(x=>x.id===gid); if(g) g.members.push(name); }
+  save(); renderSquadBoard();
+};
+window.sqRename=gi=>{
+  const ctx=currentSquadCtx(); if(!ctx) return;
+  const n=prompt('Objective name:',ctx.sq.groups[gi].name);
+  if(n&&n.trim()){ ctx.sq.groups[gi].name=n.trim(); save(); renderSquadBoard(); }
+};
+window.sqSetCap=gi=>{
+  const ctx=currentSquadCtx(); if(!ctx) return;
+  const n=prompt('Target number of players (0 = no target):',ctx.sq.groups[gi].cap||0);
+  if(n!==null){ ctx.sq.groups[gi].cap=Math.max(0,+n||0); save(); renderSquadBoard(); }
+};
+window.sqDelObj=gi=>{
+  const ctx=currentSquadCtx(); if(!ctx) return;
+  const g=ctx.sq.groups[gi];
+  if(!confirm(`Remove "${g.name}"? Its ${g.members.length} player(s) become unassigned.`)) return;
+  ctx.sq.groups.splice(gi,1); save(); renderSquadBoard();
+};
+window.sqAutoFill=()=>{
+  const ctx=currentSquadCtx(); if(!ctx) return;
+  const {ev,slot,sq}=ctx;
+  const assigned=new Set(); sq.groups.forEach(g=>g.members.forEach(n=>assigned.add(norm(n))));
+  // starters first, in team order, into groups that still have room
+  const pool=ev.teams[slot].filter(m=>!assigned.has(norm(m.name)));
+  for(const m of pool){
+    const g=sq.groups.find(g=>g.cap&&g.members.length<g.cap);
+    if(!g) break;
+    g.members.push(m.name);
+  }
+  save(); renderSquadBoard(); toast('Filled objectives up to their target sizes');
+};
+function briefingText(ev,slot,sq){
+  const label=slot==='noon'?'NOON':'EVENING';
+  const roster=ev.teams[slot];
+  const roleOf=n=>{ const m=roster.find(x=>norm(x.name)===norm(n)); return m?m.role:'sub'; };
+  let t=`${MODES[ev.mode].toUpperCase()} — ${ev.date} — ${label} SQUAD\n`;
+  t+='='.repeat(44)+'\n';
+  for(const g of sq.groups){
+    if(!g.members.length) continue;
+    t+=`\n${g.name.toUpperCase()}${g.cap?` (target ${g.cap})`:''}\n`;
+    const sta=g.members.filter(n=>roleOf(n)==='starter'), sub=g.members.filter(n=>roleOf(n)!=='starter');
+    if(sta.length) t+='  Starters: '+sta.join(', ')+'\n';
+    if(sub.length) t+='  Subs: '+sub.join(', ')+'\n';
+  }
+  const assigned=new Set(); sq.groups.forEach(g=>g.members.forEach(n=>assigned.add(norm(n))));
+  const un=roster.filter(m=>!assigned.has(norm(m.name)));
+  if(un.length) t+='\nUNASSIGNED: '+un.map(m=>m.name).join(', ')+'\n';
+  t+='\nCapture · Hold · Dominate — be online 5 min before start.\n';
+  return t;
+}
+document.getElementById('sqEvent').onchange=renderSquadBoard;
+document.getElementById('sqTeam').onchange=renderSquadBoard;
+document.getElementById('sqReset').onclick=()=>{
+  const ctx=currentSquadCtx(); if(!ctx) return;
+  if(!confirm('Reset this squad to the default objectives and clear all assignments?')) return;
+  delete db.squads[squadKey(ctx.ev.id,ctx.slot)];
+  save(); renderSquadBoard(); toast('Squad reset');
+};
+document.getElementById('sqAddObj').onclick=()=>{
+  const ctx=currentSquadCtx(); if(!ctx) return;
+  const n=prompt('New objective name:'); if(!n||!n.trim()) return;
+  ctx.sq.groups.push({id:'g'+Date.now(),name:n.trim(),cap:0,members:[]});
+  save(); renderSquadBoard();
+};
+document.getElementById('sqCopy').onclick=()=>{
+  navigator.clipboard.writeText(document.getElementById('sqPreview').value)
+    .then(()=>toast('Briefing copied — paste into in-game mail or Discord'));
+};
+document.getElementById('sqCsv').onclick=()=>{
+  const ctx=currentSquadCtx(); if(!ctx) return;
+  const {ev,slot,sq}=ctx, roster=ev.teams[slot];
+  const roleOf=n=>{ const m=roster.find(x=>norm(x.name)===norm(n)); return m?m.role:'sub'; };
+  let csv='objective,player,role\n';
+  for(const g of sq.groups) for(const n of g.members) csv+=`"${g.name}",${n},${roleOf(n)}\n`;
+  const assigned=new Set(); sq.groups.forEach(g=>g.members.forEach(n=>assigned.add(norm(n))));
+  roster.filter(m=>!assigned.has(norm(m.name))).forEach(m=>csv+=`unassigned,${m.name},${m.role}\n`);
+  download(`${ev.mode}-${ev.date}-${slot}-squads.csv`,csv,'text/csv');
+};
+document.getElementById('sqPoster').onclick=()=>{
+  const ctx=currentSquadCtx(); if(!ctx) return;
+  const {ev,slot,sq}=ctx, roster=ev.teams[slot];
+  const roleOf=n=>{ const m=roster.find(x=>norm(x.name)===norm(n)); return m?m.role:'sub'; };
+  const groups=sq.groups.filter(g=>g.members.length);
+  const cols=2, colW=560, pad=40, headH=170;
+  const rowsPerGroup=g=>2+g.members.length;
+  let colH=[0,0];
+  const placed=groups.map((g,i)=>{ const c=i%cols; const y=colH[c]; colH[c]+=rowsPerGroup(g)*24+26; return {g,c,y}; });
+  const H=headH+Math.max(...colH,60)+70, W=pad*2+colW*cols+30;
+  const esc2=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const accent=ev.mode==='desert'?'#f0a832':'#4a9eff';
+  let body='';
+  for(const {g,c,y} of placed){
+    const x=pad+c*(colW+30), top=headH+y;
+    body+=`<rect x="${x}" y="${top}" width="${colW}" height="${rowsPerGroup(g)*24+10}" rx="10" fill="#1b202b" stroke="#323b4d"/>`;
+    body+=`<text x="${x+14}" y="${top+26}" fill="${accent}" font-size="17" font-weight="700">${esc2(g.name.toUpperCase())}</text>`;
+    g.members.forEach((n,i)=>{
+      const st=roleOf(n)==='starter';
+      body+=`<text x="${x+22}" y="${top+52+i*24}" fill="${st?'#e6eaf2':'#8b96ab'}" font-size="15">${st?'★':'·'} ${esc2(n)}</text>`;
+    });
+  }
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Arial,Helvetica,sans-serif">
+<rect width="${W}" height="${H}" fill="#12151c"/>
+<text x="${pad}" y="60" fill="${accent}" font-size="38" font-weight="800" letter-spacing="2">${MODES[ev.mode].toUpperCase()}</text>
+<text x="${pad}" y="96" fill="#e6eaf2" font-size="22">${ev.date} · ${slot==='noon'?'NOON':'EVENING'} SQUAD</text>
+<text x="${pad}" y="126" fill="#8b96ab" font-size="15">CAPTURE · HOLD · DOMINATE — ★ starter, · substitute</text>
+<line x1="${pad}" y1="146" x2="${W-pad}" y2="146" stroke="${accent}" stroke-width="2"/>
+${body}
+<text x="${pad}" y="${H-24}" fill="#5c6678" font-size="12">Storm Manager — generated ${new Date().toISOString().slice(0,10)}</text></svg>`;
+  download(`${ev.mode}-${ev.date}-${slot}-briefing.svg`,svg,'image/svg+xml');
+};
+
 /* ================= mode chip ================= */
 function updateModeChip(){
   const el=document.getElementById('modeChip'); if(!el) return;
@@ -872,7 +1228,34 @@ function updateModeChip(){
 updateModeChip();
 // Reconcile on every load: heals stale stats left by deletions/edits made
 // under older versions, and keeps everything consistent with the event log.
-recomputeDerived();
+suppressSave=true; recomputeDerived(); suppressSave=false;
+
+/* ================= access control & startup ================= */
+// Every mutating action goes through this guard, so a viewer can never write
+// even if they craft a click on a hidden control.
+for(const n of ['delApp','setAvail','dropMember','removeMember','removeWait','removeNa','promoteTo',
+  'toggleStarter','setGuar','uiRename','uiMerge','clearBan','delPlayer','resolveReview','removeReview',
+  'markAtt','markAll','applyBans','delEvent','unlockEvent','switchMode',
+  'sqAssign','sqMove','sqRename','sqSetCap','sqDelObj','sqAutoFill']){
+  const f=window[n];
+  if(typeof f==='function') window[n]=function(){
+    if(!isAdmin()){ toast('View only — log in as admin to make changes','err'); return; }
+    return f.apply(this,arguments);
+  };
+}
+for(const id of ['csvFile','btnClearApps','pasteBox','btnParsePaste','btnAssign','btnSaveEvent',
+  'newPlayerName','newPlayerGuar','btnAddPlayer','importJSON','btnWipe','setBanDays','btnSaveSettings']){
+  const e=document.getElementById(id); if(!e) continue;
+  (e.parentElement&&e.parentElement.tagName==='LABEL'?e.parentElement:e).classList.add('admin-only');
+}
+applyAccess(); renderAuthBar(); renderSquadTab();
+(async()=>{
+  if(!CLOUD) return;
+  if(auth.refresh) await refreshSession();
+  await pullCloud();
+  setInterval(refreshSession, 45*60*1000);          // keep the admin session alive
+  setInterval(()=>{ if(!auth.token) pullCloud(); }, 60*1000); // viewers poll for updates
+})();
 
 /* ================= settings / data ================= */
 document.getElementById('btnSaveSettings').onclick=()=>{
