@@ -198,7 +198,7 @@
 <section id="tab-history" style="display:none">
   <div class="panel">
     <h2>Events</h2>
-    <p class="help">After each battle, open the event and mark no-shows. Saving attendance applies the 3-week ban automatically — only for the mode the no-show happened in. Deleting an event removes all its effects (fairness dates, no-shows, bans).</p>
+    <p class="help">After each battle, open the event and mark no-shows. Each no-show gets the default 3-week ban, but you can set any length per player — <b>0 days = excused</b>, still logged as a no-show but no ban. Add a note (reason, warning given, etc.) against anyone; notes show as 🗒 in the history grid. Bans apply only to the mode the no-show happened in. Deleting an event removes all its effects.</p>
     <div id="eventList"></div>
   </div>
   <div class="panel" id="attendancePanel" style="display:none"></div>
@@ -285,9 +285,13 @@ function recomputeDerived(){
       if(m.role==='starter'&&(!p.lastStarted[mode]||p.lastStarted[mode]<ev.date)) p.lastStarted[mode]=ev.date;
       if(m.attended===false){
         p.noShows++;
-        const d=new Date(ev.date+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+banDays);
-        const until=d.toISOString().slice(0,10);
-        if(!p.banUntil[mode]||p.banUntil[mode]<until) p.banUntil[mode]=until;
+        // per-player override; 0 = no ban (excused absence)
+        const days=(typeof m.banDays==='number'&&m.banDays>=0)?m.banDays:banDays;
+        if(days>0){
+          const d=new Date(ev.date+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+days);
+          const until=d.toISOString().slice(0,10);
+          if(!p.banUntil[mode]||p.banUntil[mode]<until) p.banUntil[mode]=until;
+        }
       }
     }
     for(const n of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...(ev.waitlist||[]),...(ev.notAvailable||[]),...(ev.banned||[])]){
@@ -903,15 +907,27 @@ window.delEvent=id=>{
 window.openEvent=id=>{
   const ev=db.events.find(e=>e.id===id); if(!ev)return;
   const ro=!!ev.locked;
+  const defDays=db.settings.banDays||21;
   const teamRows=(slot,label)=>{
-    const rows=ev.teams[slot].map((m,i)=>`<tr>
-      <td>${esc(m.name)}</td><td><span class="badge ${m.role==='starter'?'b-start':'b-sub'}">${m.role}</span></td>
-      <td>${ro
-        ? (m.attended===false?'<span class="badge b-ban">no-show</span>':'<span class="badge b-start">showed</span>')
+    const rows=ev.teams[slot].map((m,i)=>{
+      const ns=m.attended===false;
+      const days=(typeof m.banDays==='number'&&m.banDays>=0)?m.banDays:defDays;
+      const att=ro
+        ? (ns?'<span class="badge b-ban">no-show</span>':'<span class="badge b-start">showed</span>')
         : `<label style="margin-right:10px"><input type="radio" name="att-${slot}-${i}" ${m.attended===true?'checked':''} onchange="markAtt(${id},'${slot}',${i},true)"> showed</label>
-           <label><input type="radio" name="att-${slot}-${i}" ${m.attended===false?'checked':''} onchange="markAtt(${id},'${slot}',${i},false)"> no-show</label>`}
-      </td></tr>`).join('');
-    return `<div class="team-col"><h3>${label}</h3><table><tr><th>Player</th><th>Role</th><th>Attendance</th></tr>${rows||'<tr><td colspan=3 class=muted>empty</td></tr>'}</table></div>`;
+           <label><input type="radio" name="att-${slot}-${i}" ${ns?'checked':''} onchange="markAtt(${id},'${slot}',${i},false)"> no-show</label>`;
+      const ban=!ns ? '<span class="muted">—</span>'
+        : ro ? (days>0?`<span class="badge b-ban">${days} days</span>`:'<span class="badge b-wait">excused</span>')
+        : `<input type="number" min="0" style="width:64px" value="${days}" title="Days banned from this mode. 0 = excused, no ban."
+             onchange="setBanLen(${id},'${slot}',${i},this.value)"> <span class="muted" style="font-size:11px">days</span>`;
+      const note=ro
+        ? (m.note?esc(m.note):'<span class="muted">—</span>')
+        : `<input type="text" style="width:100%;min-width:150px" placeholder="reason / note…" value="${esc(m.note||'')}"
+             onchange="setAttNote(${id},'${slot}',${i},this.value)">`;
+      return `<tr><td>${esc(m.name)}</td><td><span class="badge ${m.role==='starter'?'b-start':'b-sub'}">${m.role}</span></td>
+        <td>${att}</td><td>${ban}</td><td>${note}</td></tr>`;
+    }).join('');
+    return `<div class="team-col" style="min-width:520px"><h3>${label}</h3><table><tr><th>Player</th><th>Role</th><th>Attendance</th><th>Ban</th><th>Note</th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
   };
   document.getElementById('attendancePanel').style.display='';
   document.getElementById('attendancePanel').innerHTML=`
@@ -941,7 +957,23 @@ window.unlockEvent=id=>{
   ev.locked=false; save(); renderEvents(); openEvent(id);
 };
 window.markAtt=(id,slot,i,val)=>{
-  const ev=db.events.find(e=>e.id===id); ev.teams[slot][i].attended=val; save();
+  const ev=db.events.find(e=>e.id===id); const m=ev.teams[slot][i];
+  m.attended=val;
+  if(val===true){ delete m.banDays; }                  // showing up clears any ban override
+  save(); openEvent(id);                               // re-render so ban/note fields appear
+};
+window.setBanLen=(id,slot,i,val)=>{
+  const ev=db.events.find(e=>e.id===id); const m=ev.teams[slot][i];
+  const n=Math.max(0,Math.round(+val||0));
+  m.banDays=n; save();
+  if(ev.locked) recomputeDerived();                    // already-applied bans update immediately
+  toast(n>0?`${m.name}: ${n}-day ban`:`${m.name}: excused, no ban`);
+};
+window.setAttNote=(id,slot,i,val)=>{
+  const ev=db.events.find(e=>e.id===id); const m=ev.teams[slot][i];
+  const t=String(val||'').trim();
+  if(t) m.note=t; else delete m.note;
+  save();
 };
 window.markAll=(id,val)=>{
   const ev=db.events.find(e=>e.id===id);
@@ -950,16 +982,22 @@ window.markAll=(id,val)=>{
 };
 window.applyBans=id=>{
   const ev=db.events.find(e=>e.id===id);
-  let bans=0;
+  let bans=0, excused=0;
   for(const s of ['noon','evening']) for(const m of ev.teams[s]){
-    if(m.attended===false) bans++;
+    if(m.attended===false){
+      const days=(typeof m.banDays==='number'&&m.banDays>=0)?m.banDays:(db.settings.banDays||21);
+      if(days>0) bans++; else excused++;
+    }
     if(m.attended===null) m.attended=true; // default unmarked to showed
   }
   ev.locked=true; // lock to prevent accidental edits of the wrong event
   recomputeDerived(); // bans & no-show counts derive from the event log
   renderEvents();
   document.getElementById('attendancePanel').style.display='none';
-  toast(bans?`Saved & locked — ${bans} no-show${bans>1?'s':''}, banned from ${MODES[ev.mode]} for ${db.settings.banDays} days`:'Attendance saved & locked');
+  const bits=[];
+  if(bans) bits.push(`${bans} banned from ${MODES[ev.mode]}`);
+  if(excused) bits.push(`${excused} excused`);
+  toast(bits.length?`Saved & locked — ${bits.join(', ')}`:'Attendance saved & locked');
 };
 
 /* ================= history grid ================= */
@@ -973,6 +1011,11 @@ function gridBadge(v){
     BAN:'<span class="badge b-ban">BAN</span>',
     DNV:'<span class="badge b-wait">DNV</span>'
   })[v]||'<span class="muted">—</span>';
+}
+function gridNote(ev,name){
+  for(const s of ['noon','evening']) for(const m of ev.teams[s])
+    if(norm(m.name)===norm(name)&&m.note) return m.note;
+  return '';
 }
 function gridValue(ev,name){
   const has=(arr)=>(arr||[]).some(n=>norm(n)===norm(name));
@@ -1005,7 +1048,10 @@ function renderGrid(){
     if(!evs.length) continue;
     html+=`<h3 style="color:${mode==='desert'?'var(--accent)':'var(--accent2)'}">${mode==='desert'?'🏜️ Desert Storm':'🏞️ Canyon Storm'} <button class="mini" onclick="exportGrid('${mode}')">⬇ Export grid CSV</button></h3>
       <div style="overflow-x:auto"><table><tr><th>Player</th>${evs.map(e=>`<th>${e.date}</th>`).join('')}</tr>`+
-      names.map(n=>`<tr><td>${esc(n)}</td>${evs.map(ev=>`<td>${gridBadge(gridValue(ev,n))}</td>`).join('')}</tr>`).join('')+'</table></div>';
+      names.map(n=>`<tr><td>${esc(n)}</td>${evs.map(ev=>{
+        const note=gridNote(ev,n);
+        return `<td${note?` title="${esc(note)}"`:''}>${gridBadge(gridValue(ev,n))}${note?' <span class="muted" title="'+esc(note)+'">🗒</span>':''}</td>`;
+      }).join('')}</tr>`).join('')+'</table></div>';
   }
   area.innerHTML=html||'<p class="muted">No saved events yet — the grid builds itself as you run events.</p>';
 }
@@ -1235,7 +1281,7 @@ suppressSave=true; recomputeDerived(); suppressSave=false;
 // even if they craft a click on a hidden control.
 for(const n of ['delApp','setAvail','dropMember','removeMember','removeWait','removeNa','promoteTo',
   'toggleStarter','setGuar','uiRename','uiMerge','clearBan','delPlayer','resolveReview','removeReview',
-  'markAtt','markAll','applyBans','delEvent','unlockEvent','switchMode',
+  'markAtt','setBanLen','setAttNote','markAll','applyBans','delEvent','unlockEvent','switchMode',
   'sqAssign','sqMove','sqRename','sqSetCap','sqDelObj','sqAutoFill']){
   const f=window[n];
   if(typeof f==='function') window[n]=function(){
