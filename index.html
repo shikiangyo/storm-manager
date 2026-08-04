@@ -100,6 +100,9 @@
     <button data-tab="squads">Squad Setup</button>
     <button data-tab="roster">Roster</button>
     <button data-tab="history">History &amp; Attendance</button>
+    <button data-tab="csplayers">CS Players</button>
+    <button data-tab="csbuild">CS Build</button>
+    <button data-tab="cssetup">CS Setup</button>
     <button data-tab="settings">Data / Settings</button>
   </nav>
   <div id="authBar" class="authbar"></div>
@@ -237,6 +240,69 @@
   </div>
 </section>
 
+<!-- ============ CS PLAYERS TAB ============ -->
+<section id="tab-csplayers" style="display:none">
+  <div class="panel">
+    <div class="flexh" id="csStats"></div>
+  </div>
+  <div class="panel">
+    <h2>Canyon Storm players</h2>
+    <p class="help">Combat attributes used by <b>CS Build</b> only: <b>Power</b>, <b>T1 type</b> (Tank / Missile / Aircraft)
+      and <b>Player type</b> (Roamer / Holder / Flex). This is separate from the main Roster tab, which decides
+      <i>who plays</i>; this decides <i>where they stand</i>. Records are matched to the roster by name, so renaming or
+      merging someone on the Roster tab carries their CS data across automatically.
+      <b>Power drives everything</b> — the snake draft and the sub pairing both use it, so anyone left at 0 will land badly.</p>
+    <div class="row">
+      <button class="btn" id="csAdd">+ Add CS record</button>
+      <label id="csImportLabel">Import CSV <input type="file" id="csImport" accept=".csv,.txt"></label>
+      <button class="btn ghost admin-only" onclick="csPullRoster()">Pull in missing roster names</button>
+      <input type="text" id="csSearch" placeholder="🔍 Search…" style="margin-left:auto">
+    </div>
+    <p class="help">CSV columns: <code>name, power, t1, playertype</code> — the last two are optional and default to Tank / Holder.</p>
+    <div id="csRosterTable"></div>
+  </div>
+</section>
+
+<!-- ============ CS BUILD TAB ============ -->
+<section id="tab-csbuild" style="display:none">
+  <div class="panel">
+    <h2>CS Build</h2>
+    <p class="help">Reads a saved <b>Canyon Storm</b> event and takes its picked players and their starter/sub roles exactly as
+      the fairness selection set them — this tab never changes who plays. <b>Noon squad = Team A, Evening squad = Team B.</b>
+      It then places them into groups by power and T1 spread, pairs each sub to a starter, and generates the mail and poster.</p>
+    <div class="row">
+      <label>Canyon event <select id="csEvent"></select></label>
+      <label>Squad <select id="csSlot"><option value="noon">☀️ Noon → Team A</option><option value="evening">🌙 Evening → Team B</option></select></label>
+    </div>
+    <div id="csBoard"></div>
+  </div>
+  <div class="panel" id="csExport" style="display:none">
+    <h2>Briefing</h2>
+    <div class="row">
+      <button class="btn" onclick="csMail('whatsapp')">📋 Generate mail</button>
+      <button class="btn gold" onclick="csShowPoster()">🖼 Poster</button>
+      <button class="btn ghost admin-only" onclick="csLogSubs()">🔒 Log sub pairings</button>
+    </div>
+    <p class="help">"Log sub pairings" records who received a sub this week, so that sub duty rotates fairly the next time
+      two players are tied on power. It doesn't lock or change the event.</p>
+  </div>
+</section>
+
+<!-- ============ CS SETUP TAB ============ -->
+<section id="tab-cssetup" style="display:none">
+  <div class="panel">
+    <h2>CS squad setup</h2>
+    <p class="help">How many <b>starters</b> and <b>subs</b> each Canyon group takes. Two setups — you pick which applies when
+      you auto-assign. Setting a group's subs equal to its starters gives every starter their own dedicated sub;
+      setting subs to 0 means that group runs without cover. The totals want to match the picked squad
+      (e.g. 20 starters / 10 subs).</p>
+    <div id="csSetupArea"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn ghost admin-only" onclick="csSetupReset()">Reset both to defaults</button>
+    </div>
+  </div>
+</section>
+
 </main>
 <div class="toast" id="toast"></div>
 
@@ -244,6 +310,23 @@
 'use strict';
 /* ================= state ================= */
 const LS_KEY='stormManagerData_v1';
+/* Canyon Storm seed roster — imported from the Canyon Storm Commander backup.
+   Only used the very first time; after that db.cs.roster is the live copy. */
+const CS_SEED=[{"id":"li8t23j","name":"smallworld75","power":430000005,"t1":"Aircraft","ptype":"Flex"},{"id":"lw4gzno","name":"NightMaRe","power":373387873,"t1":"Aircraft","ptype":"Flex"},{"id":"n2j1hnv","name":"OrthoTR","power":323921674,"t1":"Missile","ptype":"Flex"},{"id":"vw4w8uj","name":"кj 7977","power":320676571,"t1":"Aircraft","ptype":"Roamer"},{"id":"kca20yy","name":"Kaplan75","power":309918512,"t1":"Missile","ptype":"Roamer"},{"id":"rjkzq3r","name":"old totes Mclovin","power":300479051,"t1":"Missile","ptype":"Holder"},{"id":"mim0zis","name":"SpamSolo","power":300159323,"t1":"Missile","ptype":"Holder"},{"id":"cybi4kg","name":"Sakzino","power":283680365,"t1":"Tank","ptype":"Holder"},{"id":"7lvooy8","name":"Penguin Overlord","power":269271193,"t1":"Tank","ptype":"Roamer"},{"id":"dquom5d","name":"F U MiraB27","power":268799097,"t1":"Aircraft","ptype":"Holder"},{"id":"euwfb0u","name":"DeSchoot","power":265650940,"t1":"Aircraft","ptype":"Holder"},{"id":"f2p4sgy","name":"krizzson","power":263121108,"t1":"Missile","ptype":"Roamer"},{"id":"n0ic1sq","name":"PapasitoArdockaPSG","power":254497171,"t1":"Aircraft","ptype":"Roamer"},{"id":"nt4tuii","name":"Shadøws","power":252927389,"t1":"Missile","ptype":"Holder"},{"id":"qs6vg6v","name":"Аиδιβае","power":252618440,"t1":"Aircraft","ptype":"Holder"},{"id":"u296psy","name":"WacoKid","power":251780511,"t1":"Aircraft","ptype":"Holder"},{"id":"msjl3g9","name":"BarySaintGermain","power":250911021,"t1":"Aircraft","ptype":"Roamer"},{"id":"272o7no","name":"Hellmuth","power":250250113,"t1":"Aircraft","ptype":"Holder"},{"id":"e2v65nd","name":"jonnywolf","power":248510413,"t1":"Missile","ptype":"Holder"},{"id":"eta9d2a","name":"Laci 79","power":248279520,"t1":"Aircraft","ptype":"Holder"},{"id":"85dw3xl","name":"Êrrør404","power":247310839,"t1":"Missile","ptype":"Holder"},{"id":"2p6eua7","name":"HN006","power":247073594,"t1":"Aircraft","ptype":"Holder"},{"id":"5ok7bae","name":"ForrestFo","power":246321311,"t1":"Missile","ptype":"Holder"},{"id":"1wc3gc9","name":"Yokko","power":245601016,"t1":"Missile","ptype":"Flex"},{"id":"e3gje4o","name":"Nariel","power":244674713,"t1":"Missile","ptype":"Holder"},{"id":"5xtheh9","name":"PiŘÃt乇","power":244556863,"t1":"Aircraft","ptype":"Holder"},{"id":"w9dzv0m","name":"AmĆ","power":243472262,"t1":"Aircraft","ptype":"Holder"},{"id":"07vevvz","name":"Jsnow","power":240926431,"t1":"Missile","ptype":"Holder"},{"id":"xhgmvli","name":"moo7a","power":239952255,"t1":"Aircraft","ptype":"Holder"},{"id":"17ttw35","name":"NNyto","power":239805138,"t1":"Aircraft","ptype":"Holder"},{"id":"oyur4ux","name":"AkatsukiSLAYER","power":239504335,"t1":"Aircraft","ptype":"Holder"},{"id":"1e4xxi5","name":"H K N","power":237806746,"t1":"Aircraft","ptype":"Holder"},{"id":"0fxkcnc","name":"Mad Mouse","power":236980617,"t1":"Aircraft","ptype":"Holder"},{"id":"rf6ywaq","name":"aboad","power":235776199,"t1":"Aircraft","ptype":"Holder"},{"id":"fpx0df5","name":"Fatboy415","power":235534981,"t1":"Aircraft","ptype":"Holder"},{"id":"3m9dvin","name":"Dr Ouss 17","power":234853741,"t1":"Aircraft","ptype":"Holder"},{"id":"4p2813u","name":"CAPTAIN","power":234391354,"t1":"Aircraft","ptype":"Holder"},{"id":"vp6rzhk","name":"NissTheNick","power":234157987,"t1":"Aircraft","ptype":"Holder"},{"id":"62sykjo","name":"乂Steel Claw乂","power":233431839,"t1":"Aircraft","ptype":"Holder"},{"id":"zc0tqe5","name":"Wild4D","power":231831924,"t1":"Aircraft","ptype":"Holder"},{"id":"46pgyxk","name":"GodzGift","power":231636889,"t1":"Aircraft","ptype":"Holder"},{"id":"z72so9y","name":"Thorondisson90","power":231587864,"t1":"Aircraft","ptype":"Holder"},{"id":"hql6r8f","name":"ABu3TB","power":231199979,"t1":"Missile","ptype":"Holder"},{"id":"qt7z47s","name":"Ocelot ⊂GᏌ","power":230732460,"t1":"Aircraft","ptype":"Holder"},{"id":"ny3bgh3","name":"Işka","power":230723279,"t1":"Aircraft","ptype":"Holder"},{"id":"1ke4dqm","name":"GI Schnullerbacke","power":228994847,"t1":"Tank","ptype":"Holder"},{"id":"y4nqfbg","name":"Last samurai80","power":228307194,"t1":"Aircraft","ptype":"Holder"},{"id":"mpc502y","name":"Colly222","power":226480025,"t1":"Aircraft","ptype":"Holder"},{"id":"mvfu1p7","name":"MrNaKåH","power":225761116,"t1":"Aircraft","ptype":"Holder"},{"id":"w36jhqd","name":"NRE09","power":224828709,"t1":"Aircraft","ptype":"Holder"},{"id":"8z5edai","name":"YAN vs YANX","power":224350650,"t1":"Aircraft","ptype":"Holder"},{"id":"7ap2vbm","name":"ThatBabeSticky","power":223455417,"t1":"Aircraft","ptype":"Holder"},{"id":"0pp9ba1","name":"PhantomRainB27","power":222736874,"t1":"Tank","ptype":"Holder"},{"id":"g26y9h5","name":"Free Dude","power":220925862,"t1":"Aircraft","ptype":"Holder"},{"id":"wmvhp7a","name":"Exiled","power":220139427,"t1":"Aircraft","ptype":"Holder"},{"id":"y816t24","name":"Ninjabrillo","power":219894928,"t1":"Aircraft","ptype":"Holder"},{"id":"9v508he","name":"KRustee Pancake","power":219496979,"t1":"Tank","ptype":"Holder"},{"id":"vcyw20q","name":"sovyar","power":218967852,"t1":"Missile","ptype":"Holder"},{"id":"93xu2j4","name":"ZoZo","power":218607146,"t1":"Tank","ptype":"Holder"},{"id":"szbqz6d","name":"DoomsdayX","power":218538565,"t1":"Aircraft","ptype":"Holder"},{"id":"cs4kbxu","name":"RiskyBusiness","power":217570746,"t1":"Missile","ptype":"Holder"},{"id":"743rj0t","name":"MaikB27","power":217212660,"t1":"Aircraft","ptype":"Holder"},{"id":"liv0dnm","name":"AYMCHLO","power":216451986,"t1":"Tank","ptype":"Holder"},{"id":"8axea6l","name":"FOX UA","power":214191761,"t1":"Aircraft","ptype":"Holder"},{"id":"ccix8uf","name":"ANDI","power":212233484,"t1":"Tank","ptype":"Holder"},{"id":"n8ac625","name":"ຮnіŋ","power":211821388,"t1":"Tank","ptype":"Holder"},{"id":"wbqxuh3","name":"Coach Mike IGN","power":211709859,"t1":"Aircraft","ptype":"Holder"},{"id":"gygucc5","name":"TommyGunner","power":210885630,"t1":"Aircraft","ptype":"Holder"},{"id":"re34feq","name":"JangKun","power":210802204,"t1":"Tank","ptype":"Holder"},{"id":"8zx30rp","name":"EmsterB27","power":209847575,"t1":"Tank","ptype":"Holder"},{"id":"swux2du","name":"SwOe","power":209814864,"t1":"Tank","ptype":"Holder"},{"id":"941br5h","name":"Big Duck Mk","power":209718922,"t1":"Tank","ptype":"Holder"},{"id":"dtpwb0k","name":"Āpocalypsē","power":209603259,"t1":"Aircraft","ptype":"Holder"},{"id":"46i4vts","name":"MinielIO","power":208780535,"t1":"Aircraft","ptype":"Holder"},{"id":"uxl00cc","name":"iLMoro86","power":207314258,"t1":"Tank","ptype":"Holder"},{"id":"xbozvrf","name":"VINSMOKE","power":207108913,"t1":"Aircraft","ptype":"Holder"},{"id":"xbx8fz5","name":"H1CKY","power":206611586,"t1":"Missile","ptype":"Holder"},{"id":"u1oylpl","name":"LadyPasta","power":206332141,"t1":"Aircraft","ptype":"Holder"},{"id":"2atesfw","name":"Lofs","power":205782132,"t1":"Tank","ptype":"Holder"},{"id":"1qnocqb","name":"ENERGYBOY","power":205561222,"t1":"Missile","ptype":"Holder"},{"id":"eik11t9","name":"Bocinkata","power":205376039,"t1":"Missile","ptype":"Holder"},{"id":"7vapywd","name":"Bobyrasta","power":205224381,"t1":"Aircraft","ptype":"Holder"},{"id":"6fmkypd","name":"UlquiOrra","power":204516604,"t1":"Aircraft","ptype":"Holder"},{"id":"ja7ue7m","name":"Plavloka","power":204443038,"t1":"Tank","ptype":"Holder"},{"id":"as8lmfk","name":"KiarO","power":204404881,"t1":"Missile","ptype":"Holder"},{"id":"yomkzym","name":"oktalus","power":203854271,"t1":"Aircraft","ptype":"Holder"},{"id":"12okne5","name":"Zzkrine","power":203018280,"t1":"Missile","ptype":"Holder"},{"id":"wk1ccih","name":"Turkey Guitarist","power":202941612,"t1":"Aircraft","ptype":"Holder"},{"id":"el7o5ea","name":"Henqq","power":202591969,"t1":"Aircraft","ptype":"Holder"},{"id":"9n61i7a","name":"Mac282","power":202063470,"t1":"Tank","ptype":"Holder"},{"id":"7oawnli","name":"Chocola","power":201521914,"t1":"Tank","ptype":"Holder"},{"id":"eboukzj","name":"Nool1","power":197700000,"t1":"Aircraft","ptype":"Holder"},{"id":"2lso9w7","name":"ReKKeR","power":195800000,"t1":"Aircraft","ptype":"Holder"},{"id":"mjh11v8","name":"Michxs","power":190100000,"t1":"Tank","ptype":"Holder"},{"id":"0p5pdaf","name":"Binnmansoor92","power":220404647,"t1":"Aircraft","ptype":"Holder"},{"id":"pu7drok","name":"VICE","power":325700000,"t1":"Missile","ptype":"Roamer"}];
+const CS_DEFAULT_RB=[
+  {key:'pv',  name:'Power Tower & Virus Lab',                 short:'POWER TOWER \u00b7 VIRUS LAB',    starters:4, subs:0, kind:'power'},
+  {key:'g2',  name:'Data Center 1 & Serum Factory 1',         short:'DATA CTR 1 \u00b7 SERUM FAC 1',   starters:3, subs:2, kind:'mid'},
+  {key:'g3',  name:'Data Center 2 & Defense System 2',        short:'DATA CTR 2 \u00b7 DEF SYS 2',     starters:3, subs:2, kind:'mid'},
+  {key:'g4',  name:'Warehouse 1, Warehouse 2 & Def. System 1',short:'WH 1 \u00b7 WH 2 \u00b7 DEF SYS 1',starters:3, subs:3, kind:'mid'},
+  {key:'g5',  name:'Warehouse 3, Warehouse 4 & Serum Factory 2',short:'WH 3 \u00b7 WH 4 \u00b7 SERUM FAC 2',starters:3,subs:3,kind:'mid'},
+  {key:'roam',name:'Free-Roamers',                            short:'MOBILE STRIKE',              starters:4, subs:0, kind:'roam'}
+];
+const CS_DEFAULT_DB=[
+  {key:'pv',  name:'Power Tower & Virus Lab',                 short:'POWER TOWER \u00b7 VIRUS LAB',     starters:6, subs:2, kind:'power'},
+  {key:'d2',  name:'Data Center & Serum Factory',             short:'DATA CENTER \u00b7 SERUM FACTORY', starters:5, subs:3, kind:'mid'},
+  {key:'d3',  name:'Warehouse, Warehouse & Defence Systems',  short:'WAREHOUSE x2 \u00b7 DEF SYSTEMS',  starters:5, subs:3, kind:'mid'},
+  {key:'roam',name:'Free-Roamers',                            short:'MOBILE STRIKE',               starters:4, subs:2, kind:'roam'}
+];
 let db = load();
 function migrate(d){
   // upgrade older data: bans used to be a single date across both modes
@@ -255,13 +338,20 @@ function migrate(d){
     p.lastStarted=p.lastStarted||{desert:null,canyon:null};
     p.banCleared=p.banCleared||{desert:null,canyon:null};
   }
+  // ---- Canyon Storm module data (kept apart from the selection data) ----
+  d.cs=d.cs||{};
+  d.cs.roster=d.cs.roster||CS_SEED.map(p=>({...p}));
+  d.cs.setups=d.cs.setups||{rulebringers:JSON.parse(JSON.stringify(CS_DEFAULT_RB)),
+                            dawnbreakers:JSON.parse(JSON.stringify(CS_DEFAULT_DB))};
+  d.cs.assign=d.cs.assign||{};
+  d.cs.lastsub=d.cs.lastsub||{};
   d.settings=d.settings||{banDays:21};
   if(d.settings.banDays===14) d.settings.banDays=21; // ban policy updated to 3 weeks
   return d;
 }
 function load(){
   try{ const d=JSON.parse(localStorage.getItem(LS_KEY)); if(d&&d.players) return migrate(d); }catch(e){}
-  return { players:{}, events:[], settings:{banDays:21} };
+  return migrate({ players:{}, events:[], settings:{banDays:21} });
 }
 // Rebuild every derived stat from the event log. This is the single source of
 // truth: deleting or editing an event automatically removes/updates its effects.
@@ -407,6 +497,7 @@ async function pullCloud(){
     suppressSave=true; recomputeDerived(); suppressSave=false;   // no echo-write on load
     if(!v&&auth.token&&Object.keys(db.players).length) await cloudSave(); // seed empty cloud from this device
     renderRoster(); renderEvents(); renderSquadTab(); renderAuthBar();
+    renderCsPlayers(); renderCsBuildTab(); renderCsSetup();
   }catch(e){ toast('Could not load shared data: '+e.message,'err'); }
 }
 function toast(msg,err){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2600); }
@@ -488,6 +579,9 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.tab==='squads') renderSquadTab();
   if(b.dataset.tab==='history') renderEvents();
   if(b.dataset.tab==='settings') document.getElementById('setBanDays').value=db.settings.banDays;
+  if(b.dataset.tab==='csplayers') renderCsPlayers();
+  if(b.dataset.tab==='csbuild') renderCsBuildTab();
+  if(b.dataset.tab==='cssetup') renderCsSetup();
 });
 
 /* ================= applications ================= */
@@ -1324,9 +1418,753 @@ document.getElementById('btnExportRoster').onclick=()=>{
 };
 document.getElementById('btnWipe').onclick=()=>{
   if(confirm('Delete ALL data (roster, history, bans)? This cannot be undone.')){
-    db={players:{},events:[],settings:{banDays:14}}; save(); renderRoster(); renderEvents(); toast('All data deleted');
+    db=migrate({players:{},events:[],settings:{banDays:21}}); save(); renderRoster(); renderEvents(); toast('All data deleted');
   }
 };
+
+/* =====================================================================
+   ============  CANYON STORM MODULE (ported from CS Commander) ========
+   Adds: CS Players tab, CS Build tab, CS Setup tab.
+   Reads picked players + starter/sub roles straight off a saved Canyon
+   event. Noon squad = Team A, Evening squad = Team B.
+   Nothing in here touches the existing selection / ban / attendance code.
+   ===================================================================== */
+
+const CS_T1   = ['Tank','Missile','Aircraft'];
+const CS_PTYPE= ['Roamer','Holder','Flex'];
+
+// CS_DEFAULT_RB / CS_DEFAULT_DB are declared above, next to CS_SEED.
+const CS_ALLIANCE_LABEL={rulebringers:'Rulebringers',dawnbreakers:'Dawnbreakers'};
+
+// Team colours — A is canyon amber/red, B is electric steel-blue.
+const CS_THEME={
+  A:{accent:'#f6b23a',accent2:'#d84a2f',ink:'#f7e9d0',sky1:'#1c1206',sky2:'#3a2410',bg:'#150e06',panel:'#241809',border:'#5a3c18',muted:'#b09878'},
+  B:{accent:'#35c4e0',accent2:'#f0a83c',ink:'#e6f2f7',sky1:'#07131b',sky2:'#123243',bg:'#06121a',panel:'#0e2029',border:'#1e4152',muted:'#9fb8c8'}
+};
+
+const csUid=()=>Math.random().toString(36).slice(2,9);
+const csEsc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const csToday=()=>new Date().toISOString().slice(0,10);
+
+/* ---- link CS attributes to a player by name --------------------------
+   Uses the app's own resolveKey(), so a rename or merge on the Roster tab
+   carries the CS record with it automatically. */
+function csFind(name){
+  const n=norm(name);
+  let p=db.cs.roster.find(x=>norm(x.name)===n);
+  if(p) return p;
+  const key=resolveKey(name);              // catches former names / aliases
+  if(key) p=db.cs.roster.find(x=>norm(x.name)===key||resolveKey(x.name)===key);
+  return p||null;
+}
+function csAttrs(name){
+  const p=csFind(name);
+  return p||{id:'missing:'+norm(name),name:name,power:0,t1:'Tank',ptype:'Holder',_missing:true};
+}
+
+/* =====================================================================
+   PLACEMENT — the CS Commander algorithm, with power in place of the
+   old performance score (subs are paired by power).
+   ===================================================================== */
+function csPlace(players, groups, lastsub, roles){
+  roles=roles||{};
+  const byPower=(a,b)=>b.power-a.power;
+  const out={};
+  groups.forEach(g=>out[g.key]={starters:[],pairs:[],extraSubs:[]});
+  const take=(arr,n)=>arr.splice(0,n);
+
+  const roam  = groups.find(g=>g.kind==='roam');
+  const power = groups.find(g=>g.kind==='power');
+  const mids  = groups.filter(g=>g.kind==='mid');
+  const needStarters = groups.reduce((s,g)=>s+g.starters,0);
+  const needSubs     = groups.reduce((s,g)=>s+g.subs,0);
+
+  const marked   = players.filter(p=>roles[p.id]==='Starter');
+  const unmarked = players.filter(p=>!roles[p.id]);
+
+  // Trust the event's Starter/Sub split. Only top up or trim if the numbers
+  // don't match what the squad setup asks for.
+  let starters=[...marked];
+  if(starters.length<needStarters){
+    const pool=[...unmarked].sort(byPower);
+    while(starters.length<needStarters && pool.length) starters.push(pool.shift());
+  } else if(starters.length>needStarters){
+    starters.sort(byPower); starters=starters.slice(0,needStarters);
+  }
+
+  const startIds=new Set(starters.map(p=>p.id));
+  const bench=players.filter(p=>!startIds.has(p.id));
+
+  const avail=[...starters];
+  const claim=p=>{ const i=avail.findIndex(x=>x.id===p.id); if(i>=0) avail.splice(i,1); };
+
+  // Power Tower & Virus Lab: strongest non-Roamers.
+  if(power){
+    const pool=avail.filter(p=>p.ptype!=='Roamer').sort(byPower);
+    const picked=take(pool,power.starters);
+    picked.forEach(claim);
+    out[power.key].starters=picked;
+  }
+  // Free-Roamers: designated Roamers first, then Flex, then Holders.
+  if(roam){
+    const pool=avail.filter(p=>p.ptype==='Roamer').sort(byPower);
+    const picked=take(pool,roam.starters);
+    picked.forEach(claim);
+    const short=roam.starters-picked.length;
+    if(short>0){
+      const rank=p=>p.ptype==='Flex'?0:p.ptype==='Holder'?1:2;
+      const fill=[...avail].sort((a,b)=>rank(a)-rank(b)||b.power-a.power).slice(0,short);
+      fill.forEach(claim);
+      picked.push(...fill);
+    }
+    out[roam.key].starters=picked;
+  }
+
+  // Remaining starters snake-drafted across the mid groups by power.
+  const midNeed=mids.reduce((s,g)=>s+g.starters,0);
+  const midStarters=take([...avail],midNeed);
+
+  // Sub pool: weakest bench first, tie-broken by who subbed longest ago.
+  const subPool=[...bench].sort((a,b)=>{
+    if(a.power!==b.power) return a.power-b.power;
+    return (lastsub[a.id]||'0000-00-00').localeCompare(lastsub[b.id]||'0000-00-00');
+  });
+  let subs=take(subPool,needSubs);
+
+  const queue=[...midStarters].sort(byPower);
+  let forward=true;
+  const room=Object.fromEntries(mids.map(g=>[g.key,g.starters]));
+  while(queue.length){
+    const order=forward?mids:[...mids].reverse();
+    for(const g of order){
+      if(!queue.length) break;
+      if(room[g.key]>0){ out[g.key].starters.push(queue.shift()); room[g.key]--; }
+    }
+    forward=!forward;
+  }
+
+  // Nudge for T1 diversity: swap same-power-ish players between mid groups
+  // when it reduces duplicate T1 types.
+  const dupes=list=>{ const seen={}; let n=0; list.forEach(p=>{ if(seen[p.t1]) n++; seen[p.t1]=1; }); return n; };
+  for(let pass=0;pass<3;pass++)
+    for(let i=0;i<mids.length;i++)
+      for(let j=i+1;j<mids.length;j++){
+        const A=out[mids[i].key].starters, B=out[mids[j].key].starters;
+        for(let a=0;a<A.length;a++) for(let b=0;b<B.length;b++){
+          const before=dupes(A)+dupes(B);
+          const A2=[...A], B2=[...B];
+          [A2[a],B2[b]]=[B2[b],A2[a]];
+          const after=dupes(A2)+dupes(B2);
+          const closeEnough=Math.abs(A[a].power-B[b].power)<=Math.max(A[a].power,B[b].power)*0.15;
+          if(after<before && closeEnough){ out[mids[i].key].starters=A2; out[mids[j].key].starters=B2; }
+        }
+      }
+
+  // Pair subs: within each sub-capable group the LOWEST-POWER starters get
+  // the subs, matched to a sub of the same T1 type and closest power.
+  let free=subs;
+  groups.forEach(g=>{
+    if(g.subs<=0) return;
+    const slot=out[g.key];
+    [...slot.starters].sort((a,b)=>{
+      if(a.power!==b.power) return a.power-b.power;
+      return (lastsub[a.id]||'0000-00-00').localeCompare(lastsub[b.id]||'0000-00-00');
+    }).slice(0,g.subs).forEach(st=>{
+      if(!free.length) return;
+      let best=null;
+      free.forEach((sub,idx)=>{
+        const score=(st.t1===sub.t1?0:1)*1e9+Math.abs(st.power-sub.power);
+        if(!best||score<best.score) best={idx,sub,score};
+      });
+      slot.pairs.push({starter:st,sub:best.sub});
+      free.splice(best.idx,1);
+    });
+  });
+
+  return {result:out, benched:[...free,...subPool], midStarters};
+}
+
+function csSideLabel(groups, side){
+  if(!side) return groups;
+  return groups.map(g=>g.kind==='mid'
+    ? {...g, name:`${side} – ${g.name}`, short:`${side.toUpperCase()} · ${g.short}`}
+    : g);
+}
+
+/* =====================================================================
+   MAIL — WhatsApp (asterisk bold) and plain in-game versions
+   ===================================================================== */
+function csNames(list){ return list.map(p=>p.name).join(', '); }
+
+function csMailText(team, groups, assign, mode){
+  const wa=mode==='whatsapp';
+  const b=t=>wa?`*${t}*`:t;
+  const dash='—';
+  const db_=assign.allianceKey==='dawnbreakers';
+  const suffix=db_?` ${dash} DAWNBREAKERS${assign.side?` (${assign.side.toUpperCase()})`:''}`:'';
+  const L=[];
+  if(wa){
+    L.push(b(`MISSION BRIEFING: CANYON STORM ${dash} TEAM ${team}${suffix}`),'');
+    L.push('Hello Team,','');
+    L.push(`The following is the 1GN tactical plan for CS ${team}${db_?` as Dawnbreakers${assign.side?` (${assign.side})`:''}`:''}. Our primary goal is to capture and hold buildings to secure the win.`,'');
+    L.push('Remember:');
+    L.push('(1) Personal kills do not win the Canyon — holding territory does.');
+    L.push('(2) If you are a sub who starts, find out who is missing in the plan and take their place.');
+    L.push('(3) Sub at 15mins or before if you are empty.','');
+    L.push(b('Main Objective:')+' Prioritize capturing and holding buildings.','');
+    L.push(b('General Rules'));
+    L.push('• Assign yourself to your designated buildings.');
+    L.push('• Hold your position at all costs.');
+    L.push('• Combine forces if you are outnumbered.');
+    L.push('• Ask a roamer for help in chat if needed.','');
+    L.push(b('Strategic Note:')+' Better to hold 2 buildings securely than to lose all 4 trying to spread too thin.','');
+    L.push(b('ASSIGNMENTS AND TEAMS'),'');
+  } else {
+    L.push(`CANYON STORM - TEAM ${team}${db_?` - DAWNBREAKERS${assign.side?` (${assign.side.toUpperCase()})`:''}`:''}`);
+    L.push('Goal: capture and hold buildings to win.','');
+    L.push('REMEMBER');
+    L.push("(1) Kills don't win the Canyon - holding territory does.");
+    L.push("(2) Subs who start: find who's missing in the plan and take their place.");
+    L.push('(3) Sub at 15mins or before if empty.','');
+    L.push('RULES');
+    L.push('- Hold your assigned buildings at all costs.');
+    L.push('- Combine forces if outnumbered.');
+    L.push('- Ask a roamer for help in chat.');
+    L.push('- Hold 2 securely beats losing all 4.','');
+    L.push('ASSIGNMENTS');
+  }
+  groups.forEach((g,i)=>{
+    const slot=assign.result[g.key];
+    if(g.kind==='roam'&&g.subs<=0){
+      L.push('', (wa?b('Free-Roamers:')+' ':'Roamers: ')+csNames(slot.starters));
+      return;
+    }
+    const head=g.kind==='roam'
+      ? (wa?b('Free-Roamers'):'Free-Roamers')
+      : (wa?b(`Group ${i+1}: ${g.name}`):`Group ${i+1} ${g.name}`);
+    L.push('',head);
+    if(g.subs>0){
+      L.push(wa?b('Starter ⇄ Sub'):'Starter <-> Sub');
+      slot.starters.forEach(st=>{
+        const pr=slot.pairs.find(p=>p.starter.id===st.id);
+        L.push(`${st.name} ${wa?'⇄':'<->'} ${pr?pr.sub.name:'(no sub)'}`);
+      });
+    } else {
+      L.push(`Starters = ${csNames(slot.starters)}`);
+    }
+  });
+  return L.join('\n');
+}
+
+/* =====================================================================
+   POSTER — dynamic SVG mission briefing
+   ===================================================================== */
+function csPoster(team, groups, assign){
+  const T=CS_THEME[team], W=680;
+  const isDB=assign.allianceKey==='dawnbreakers';
+  const stamp=isDB?`DAWNBREAKERS${assign.side?' · '+assign.side.toUpperCase():''}`:'CLASSIFIED';
+  const sub  =isDB?`DAWNBREAKERS${assign.side?' · '+assign.side.toUpperCase():''}`:'LAST WAR · SURVIVAL';
+  const TOP=330, CW=285, COLS=[40,355];
+
+  const card=(g,idx,x,y)=>{
+    const slot=assign.result[g.key];
+    const isRoam=g.kind==='roam';
+    const acc=isRoam?T.accent2:T.accent;
+    const fill=isRoam?(team==='A'?'#2a1206':'#2a1c06'):T.panel;
+    const bd=isRoam?T.accent2:T.border;
+    const paired=g.subs>0;
+    const label=paired?'STARTER ⇄ SUB':(isRoam?'MOBILE STRIKE':'START');
+    const list=slot.starters, n=list.length;
+    const twoCol=n>4, rows=Math.max(1,Math.ceil(n/(twoCol?2:1)));
+    const LH=19, TOPPAD=88, COLW=130;
+    const h=Math.max(150,TOPPAD+rows*LH+12);
+    const fs=twoCol?11:paired?13:15;
+    let s=`<g>
+<rect x="${x}" y="${y}" width="${CW}" height="${h}" rx="6" fill="${fill}" stroke="${bd}" stroke-width="1.5"/>
+<rect x="${x}" y="${y}" width="${CW}" height="4" fill="${acc}"/>
+<rect x="${x+14}" y="${y+16}" width="${isRoam?120:86}" height="20" rx="3" fill="${acc}"/>
+<text x="${x+14+(isRoam?60:43)}" y="${y+30}" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="12" letter-spacing="1" fill="#160c05">${isRoam?'FREE ROAMERS':'GROUP '+(idx+1)}</text>
+<text x="${x+14+(isRoam?130:96)}" y="${y+31}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="11" fill="${team==='A'?'#e9c887':'#8fd0e0'}">${csEsc(g.short)}</text>
+<line x1="${x+14}" y1="${y+48}" x2="${x+CW-14}" y2="${y+48}" stroke="${bd}" stroke-width="1"/>
+<text x="${x+14}" y="${y+70}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="11" letter-spacing="2" fill="${acc}">${label}</text>`;
+    list.forEach((p,i)=>{
+      const col=Math.floor(i/rows), row=i%rows;
+      const tx=x+14+col*COLW, ty=y+TOPPAD+row*LH;
+      if(paired){
+        const pr=slot.pairs.find(q=>q.starter.id===p.id);
+        const sn=pr?pr.sub.name:'—';
+        s+=`<text x="${tx}" y="${ty}" font-family="Oswald,'Arial Narrow',sans-serif" font-size="${fs}"><tspan fill="${T.ink}">${csEsc(p.name)}</tspan><tspan fill="${acc}"> ⇄ </tspan><tspan fill="${T.muted}">${csEsc(sn)}</tspan></text>`;
+      } else {
+        s+=`<text x="${tx}" y="${ty}" font-family="Oswald,'Arial Narrow',sans-serif" font-size="${fs}" fill="${T.ink}">${csEsc(p.name)}</text>`;
+      }
+    });
+    return {svg:s+'</g>', h};
+  };
+
+  let body='', y=TOP;
+  for(let i=0;i*2<groups.length;i++){
+    const gL=groups[i*2], gR=groups[i*2+1];
+    const L=card(gL,i*2,COLS[0],y); body+=L.svg;
+    let h=L.h;
+    if(gR){ const R=card(gR,i*2+1,COLS[1],y); body+=R.svg; h=Math.max(h,R.h); }
+    y+=h+16;
+  }
+  const H=y+74, footY=y+6;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+<defs>
+<style>@import url('https://fonts.googleapis.com/css2?family=Black+Ops+One&amp;family=Oswald:wght@400;600;700&amp;display=swap');</style>
+<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${T.sky1}"/><stop offset="0.55" stop-color="${T.sky2}"/><stop offset="1" stop-color="${T.bg}"/></linearGradient>
+<clipPath id="hero"><rect x="0" y="0" width="${W}" height="300"/></clipPath>
+</defs>
+<rect x="0" y="0" width="${W}" height="${H}" fill="${T.bg}"/>
+<g clip-path="url(#hero)">
+<rect x="0" y="0" width="${W}" height="300" fill="url(#sky)"/>
+<polygon points="0,300 0,205 70,235 150,190 240,240 330,195 430,245 520,200 610,245 680,205 680,300" fill="${team==='A'?'#2a1a0c':'#16303d'}"/>
+<polygon points="0,300 0,250 90,270 180,235 300,275 400,245 500,280 600,248 680,272 680,300" fill="${T.sky2}"/>
+</g>
+<rect x="0" y="24" width="${W}" height="26" fill="${T.accent2}"/>
+<text x="40" y="42" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="15" letter-spacing="3" fill="#160c05">1GN // MISSION BRIEFING</text>
+<text x="640" y="42" text-anchor="end" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="15" fill="#160c05">${csEsc(stamp)}</text>
+<text x="340" y="152" text-anchor="middle" font-family="'Black Ops One',Impact,sans-serif" font-size="66" letter-spacing="2" fill="${T.ink}">CANYON STORM</text>
+<text x="340" y="182" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="17" letter-spacing="${isDB?6:8}" fill="${T.accent}">${csEsc(sub)}</text>
+<polygon points="340,206 372,224 372,260 340,278 308,260 308,224" fill="${T.accent2}" stroke="${T.accent}" stroke-width="2"/>
+<text x="340" y="238" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="12" letter-spacing="3" fill="#160c05">TEAM</text>
+<text x="340" y="264" text-anchor="middle" font-family="'Black Ops One',Impact,sans-serif" font-size="24" fill="#160c05">${team}</text>
+<text x="340" y="304" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="18" letter-spacing="4" fill="${T.accent}">CAPTURE · HOLD · DOMINATE</text>
+${body}
+<rect x="40" y="${footY}" width="600" height="60" rx="6" fill="${T.sky1}" stroke="${T.border}" stroke-width="1"/>
+<text x="60" y="${footY+26}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="14" letter-spacing="1" fill="${T.accent}">30-MIN BATTLE · HOLD TERRITORY TO WIN</text>
+<text x="60" y="${footY+48}" font-family="Oswald,'Arial Narrow',sans-serif" font-size="13" fill="${T.muted}">Kills don't win the Canyon — buildings do. Sub at 15 min or earlier if empty.</text>
+</svg>`;
+}
+
+function csDownloadSVG(svg,name){
+  const url=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}));
+  const a=document.createElement('a'); a.href=url; a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+async function csDownloadPNG(svg,name,scale){
+  scale=scale||3;
+  try{ if(document.fonts&&document.fonts.ready) await document.fonts.ready; }catch(e){}
+  const url=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml;charset=utf-8'}));
+  await new Promise((res,rej)=>{
+    const img=new Image();
+    img.onload=()=>{
+      const w=img.width||680, h=img.height||940;
+      const c=document.createElement('canvas'); c.width=w*scale; c.height=h*scale;
+      const ctx=c.getContext('2d'); ctx.scale(scale,scale); ctx.drawImage(img,0,0,w,h);
+      c.toBlob(blob=>{
+        const u=URL.createObjectURL(blob);
+        const a=document.createElement('a'); a.href=u; a.download=name; a.click();
+        setTimeout(()=>{URL.revokeObjectURL(u);URL.revokeObjectURL(url);},1000);
+        res();
+      },'image/png');
+    };
+    img.onerror=rej; img.src=url;
+  });
+}
+
+/* =====================================================================
+   CS PLAYERS TAB
+   ===================================================================== */
+let csEditing=null;
+function renderCsPlayers(){
+  const wrap=document.getElementById('csRosterTable'); if(!wrap) return;
+  const q=norm(document.getElementById('csSearch').value||'');
+  const all=[...db.cs.roster].sort((a,b)=>b.power-a.power);
+  const shown=q?all.filter(p=>norm(p.name).includes(q)):all;
+  const inRoster=n=>!!resolveKey(n);
+
+  document.getElementById('csStats').innerHTML=`
+    <div class="stat"><div class="n">${all.length}</div><div class="l">CS records</div></div>
+    <div class="stat"><div class="n">${all.filter(p=>!p.power).length}</div><div class="l">Missing power</div></div>
+    <div class="stat"><div class="n">${all.filter(p=>p.ptype==='Roamer').length}</div><div class="l">Roamers</div></div>
+    <div class="stat"><div class="n">${all.filter(p=>!inRoster(p.name)).length}</div><div class="l">Not on main roster</div></div>`;
+
+  wrap.innerHTML=`<table><thead><tr><th>Name</th><th>Power</th><th>T1 type</th><th>Player type</th><th></th></tr></thead><tbody>${
+    shown.map(p=>`<tr>
+      <td><b>${csEsc(p.name)}</b>${inRoster(p.name)?'':' <span class="badge b-ban" title="No matching player on the Roster tab">unlinked</span>'}</td>
+      <td${p.power?'':' style="color:var(--red)"'}>${p.power?p.power.toLocaleString():'— not set'}</td>
+      <td><span class="badge b-noon">${csEsc(p.t1)}</span></td>
+      <td><span class="badge ${p.ptype==='Roamer'?'b-eve':'b-wait'}">${csEsc(p.ptype)}</span></td>
+      <td style="text-align:right" class="admin-only">
+        <button class="mini" onclick="csEdit('${p.id}')">✏️</button>
+        <button class="mini" onclick="csDelete('${p.id}')">🗑</button></td>
+    </tr>`).join('')||'<tr><td colspan="5" class="muted">No CS records yet.</td></tr>'
+  }</tbody></table>`;
+}
+
+window.csEdit=id=>{
+  const p=id?db.cs.roster.find(x=>x.id===id):{id:'',name:'',power:0,t1:'Tank',ptype:'Holder'};
+  if(!p) return;
+  csEditing={...p};
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box"><h3>${id?'Edit':'Add'} CS record</h3>
+    <label class="muted" style="font-size:12px">Name</label>
+    <input id="csfName" value="${csEsc(p.name)}" placeholder="In-game name">
+    <label class="muted" style="font-size:12px">Power</label>
+    <input id="csfPower" type="number" value="${p.power||0}">
+    <label class="muted" style="font-size:12px">T1 type</label>
+    <select id="csfT1" style="width:100%;margin-bottom:10px">${CS_T1.map(t=>`<option${t===p.t1?' selected':''}>${t}</option>`).join('')}</select>
+    <label class="muted" style="font-size:12px">Player type</label>
+    <select id="csfType" style="width:100%;margin-bottom:10px">${CS_PTYPE.map(t=>`<option${t===p.ptype?' selected':''}>${t}</option>`).join('')}</select>
+    <div class="row" style="margin:12px 0 0"><button class="btn" id="csfSave">Save</button>
+    <button class="btn ghost" id="csfX">Cancel</button></div></div>`;
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{ if(e.target===wrap) close(); };
+  wrap.querySelector('#csfX').onclick=close;
+  wrap.querySelector('#csfSave').onclick=()=>{
+    const name=wrap.querySelector('#csfName').value.trim();
+    if(!name){ toast('Name required','err'); return; }
+    const rec={id:p.id||csUid(),name,power:+wrap.querySelector('#csfPower').value||0,
+               t1:wrap.querySelector('#csfT1').value, ptype:wrap.querySelector('#csfType').value};
+    if(p.id) db.cs.roster=db.cs.roster.map(x=>x.id===p.id?rec:x);
+    else db.cs.roster.push(rec);
+    save(); close(); renderCsPlayers(); toast('Saved');
+  };
+  wrap.querySelector('#csfName').focus();
+};
+
+window.csDelete=id=>{
+  const p=db.cs.roster.find(x=>x.id===id); if(!p) return;
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box"><h3>Remove CS record?</h3>
+    <p class="help">Remove <b>${csEsc(p.name)}</b>'s Canyon Storm attributes (power, T1, player type)?
+    This does not touch their main roster entry, history or bans.</p>
+    <div class="row" style="margin:12px 0 0"><button class="btn warn" id="cdY">Remove</button>
+    <button class="btn ghost" id="cdN">Cancel</button></div></div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#cdN').onclick=()=>wrap.remove();
+  wrap.querySelector('#cdY').onclick=()=>{
+    db.cs.roster=db.cs.roster.filter(x=>x.id!==id);
+    save(); wrap.remove(); renderCsPlayers(); toast('Removed');
+  };
+};
+
+window.csPullRoster=()=>{
+  let added=0;
+  for(const p of Object.values(db.players)){
+    if(!csFind(p.name)){ db.cs.roster.push({id:csUid(),name:p.name,power:0,t1:'Tank',ptype:'Holder'}); added++; }
+  }
+  save(); renderCsPlayers();
+  toast(added?`Added ${added} player(s) — set their power and types`:'Everyone already has a CS record');
+};
+
+/* =====================================================================
+   CS BUILD TAB
+   ===================================================================== */
+let csSel=null;                       // currently tapped player id (for swaps)
+const csTeamOf=slot=>slot==='noon'?'A':'B';
+
+function renderCsBuildTab(){
+  const sel=document.getElementById('csEvent'); if(!sel) return;
+  const prev=sel.value;
+  const evs=db.events.filter(e=>e.mode==='canyon').sort((a,b)=>a.date<b.date?1:-1);
+  sel.innerHTML=evs.length
+    ? evs.map(e=>`<option value="${e.id}">${e.date}</option>`).join('')
+    : '<option value="">No saved Canyon events yet</option>';
+  if(prev&&evs.some(e=>String(e.id)===prev)) sel.value=prev;
+  renderCsBuild();
+}
+
+function csCtx(){
+  const evId=document.getElementById('csEvent').value;
+  const slot=document.getElementById('csSlot').value;
+  const ev=db.events.find(e=>String(e.id)===evId);
+  if(!ev) return null;
+  const team=csTeamOf(slot);
+  const picked=(ev.teams[slot]||[]).map(m=>{
+    const a=csAttrs(m.name);
+    return {...a, name:m.name, role:m.role==='starter'?'Starter':'Sub'};
+  });
+  return {ev,slot,team,picked};
+}
+
+function renderCsBuild(){
+  const board=document.getElementById('csBoard'); if(!board) return;
+  const ctx=csCtx();
+  const exp=document.getElementById('csExport');
+  if(!ctx){
+    board.innerHTML='<p class="muted">Save a <b>Canyon Storm</b> event on the New Event tab first — its picked players appear here.</p>';
+    exp.style.display='none'; return;
+  }
+  const {ev,slot,team,picked}=ctx;
+  if(!picked.length){
+    board.innerHTML='<p class="muted">This squad is empty for that event.</p>';
+    exp.style.display='none'; return;
+  }
+  const starters=picked.filter(p=>p.role==='Starter').length;
+  const subs=picked.length-starters;
+  const missing=picked.filter(p=>p._missing||!p.power);
+  const key=ev.id+'|'+slot;
+  const A=db.cs.assign[key];
+  const accent=team==='A'?'var(--accent)':'var(--accent2)';
+
+  let warn='';
+  if(missing.length) warn=`<div class="banner warn" style="margin:0 0 12px">⚠ <b>${missing.length} player(s) have no CS data</b> —
+    ${missing.map(p=>csEsc(p.name)).join(', ')}. They'll be placed as Tank / Holder at power 0, which will push them to the bottom.
+    Fix them on the <b>CS Players</b> tab for a sensible line-up.</div>`;
+
+  const setup=db.cs.setups[A?A.allianceKey:'rulebringers']||CS_DEFAULT_RB;
+  const needS=setup.reduce((s,g)=>s+g.starters,0), needB=setup.reduce((s,g)=>s+g.subs,0);
+  let mismatch='';
+  if(!A&&(starters!==needS||subs<needB))
+    mismatch=`<div class="banner view" style="margin:0 0 12px">This squad has <b>${starters} starters / ${subs} subs</b>,
+      but the current squad setup wants <b>${needS} / ${needB}</b>. It'll still build — extra starters are trimmed by power,
+      shortfalls topped up — but you may want to adjust sizes on the <b>CS Setup</b> tab.</div>`;
+
+  board.innerHTML=`${warn}${mismatch}
+    <div class="row">
+      <span class="badge ${team==='A'?'b-guar':'b-noon'}" style="font-size:13px;padding:4px 12px">TEAM ${team}</span>
+      <span class="muted">${picked.length} picked · ${starters} starters · ${subs} subs</span>
+      <span style="flex:1"></span>
+      <button class="btn ${team==='A'?'gold':''} admin-only" onclick="csAskAlliance()">⚡ ${A?'Re-assign':'Auto-assign'} Team ${team}</button>
+      ${A?`<button class="btn ghost admin-only" onclick="csClear()">✕ Clear line-up</button>`:''}
+    </div>
+    ${A?csLineupHtml(A,team):'<p class="help">Hit auto-assign to place these players into their groups and pair up the subs.</p>'}`;
+  exp.style.display=A?'':'none';
+}
+
+function csLineupHtml(A,team){
+  const pill=id=>csSel===id?'style="background:var(--accent);color:#1a1a1a;border-radius:5px;padding:1px 5px;cursor:pointer"':'style="cursor:pointer"';
+  const cards=A.groups.map((g,i)=>{
+    const slot=A.result[g.key];
+    const roam=g.kind==='roam';
+    const rows=slot.pairs.length
+      ? slot.starters.map(st=>{
+          const pr=slot.pairs.find(p=>p.starter.id===st.id);
+          return `<li><span><span onclick="csTap('${st.id}')" ${pill(st.id)}>${csEsc(st.name)}</span>
+            <span class="cap">${csEsc(st.t1)}</span></span>
+            ${pr?`<span><span style="color:var(--green)">⇄ </span><span onclick="csTap('${pr.sub.id}')" ${pill(pr.sub.id)}>${csEsc(pr.sub.name)}</span></span>`
+                :`<span onclick="csTap('${st.id}')" ${pill(st.id)} class="cap">no sub</span>`}</li>`;
+        }).join('')
+      : slot.starters.map(st=>`<li><span><span onclick="csTap('${st.id}')" ${pill(st.id)}>${csEsc(st.name)}</span>
+          ${roam?'':`<span class="cap">${csEsc(st.t1)} · ${st.power.toLocaleString()}</span>`}</span></li>`).join('');
+    return `<div class="obj"><h4><span>${roam?'FREE ROAMERS':'GROUP '+(i+1)}</span><span class="cap">${csEsc(g.short)}</span></h4>
+      <ul>${rows||'<li class="muted">empty</li>'}</ul></div>`;
+  }).join('');
+  return `<div class="help">${csSel
+      ? 'Now tap another player to swap them — or tap a starter with no sub to move this sub onto them.'
+      : 'Tap a player, then tap another to swap them. Tap a sub then a sub-less starter to assign that sub to them.'}</div>
+    <div class="obj-grid">${cards}</div>
+    ${A.benched.length?`<p class="help" style="margin-top:10px">Benched (spare): ${A.benched.map(p=>`<span onclick="csTap('${p.id}')" ${pill(p.id)}>${csEsc(p.name)}</span>`).join(', ')}</p>`:''}`;
+}
+
+window.csAskAlliance=()=>{
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box"><h3>Which side are we this week?</h3>
+    <p class="help">Canyon Storm is 2 alliances vs 1. Pick which we are.</p>
+    <div class="row"><button class="btn gold" id="caRB" style="flex:1">Rulebringers<br><span style="font-weight:400;opacity:.75;font-size:11px">the lone alliance</span></button>
+    <button class="btn" id="caDB" style="flex:1">Dawnbreakers<br><span style="font-weight:400;opacity:.75;font-size:11px">one of the pair</span></button></div></div>`;
+  document.body.appendChild(wrap);
+  wrap.onclick=e=>{ if(e.target===wrap) wrap.remove(); };
+  wrap.querySelector('#caRB').onclick=()=>{ wrap.remove(); csRun('rulebringers',null); };
+  wrap.querySelector('#caDB').onclick=()=>{
+    wrap.innerHTML=`<div class="box"><h3>Dawnbreakers — which half?</h3>
+      <p class="help">Which side of the map are we holding? This labels the mid groups.</p>
+      <div class="row"><button class="btn" id="csL" style="flex:1">Left</button>
+      <button class="btn" id="csR" style="flex:1">Right</button></div></div>`;
+    wrap.querySelector('#csL').onclick=()=>{ wrap.remove(); csRun('dawnbreakers','Left'); };
+    wrap.querySelector('#csR').onclick=()=>{ wrap.remove(); csRun('dawnbreakers','Right'); };
+  };
+};
+
+function csRun(allianceKey, side){
+  const ctx=csCtx(); if(!ctx) return;
+  const roles={}; ctx.picked.forEach(p=>roles[p.id]=p.role);
+  const groups=csSideLabel(db.cs.setups[allianceKey]||CS_DEFAULT_RB, allianceKey==='dawnbreakers'?side:null);
+  const res=csPlace(ctx.picked, groups, db.cs.lastsub, roles);
+  db.cs.assign[ctx.ev.id+'|'+ctx.slot]={...res, groups, alliance:CS_ALLIANCE_LABEL[allianceKey], allianceKey, side:allianceKey==='dawnbreakers'?side:null};
+  csSel=null; save(); renderCsBuild();
+  toast(`Team ${ctx.team} assigned`);
+}
+
+window.csClear=()=>{
+  const ctx=csCtx(); if(!ctx) return;
+  delete db.cs.assign[ctx.ev.id+'|'+ctx.slot];
+  csSel=null; save(); renderCsBuild();
+};
+
+/* ---- tap-to-swap ---------------------------------------------------- */
+window.csTap=id=>{
+  if(!isAdmin()){ toast('View only — log in as admin to make changes','err'); return; }
+  if(!csSel) { csSel=id; renderCsBuild(); return; }
+  if(csSel===id){ csSel=null; renderCsBuild(); return; }
+  const a=csSel, b=id;
+  const ctx=csCtx(); if(!ctx) return;
+  const key=ctx.ev.id+'|'+ctx.slot, A=db.cs.assign[key];
+  if(!A){ csSel=null; return; }
+
+  const R={};
+  Object.keys(A.result).forEach(k=>R[k]={
+    starters:[...A.result[k].starters],
+    pairs:A.result[k].pairs.map(p=>({...p})),
+    extraSubs:[...(A.result[k].extraSubs||[])]
+  });
+  const bench=[...A.benched];
+
+  const findStarter=pid=>{ for(const k in R){ const i=R[k].starters.findIndex(p=>p.id===pid); if(i>=0) return {k,i}; } return null; };
+  const findSub    =pid=>{ for(const k in R){ const i=R[k].pairs.findIndex(p=>p.sub&&p.sub.id===pid); if(i>=0) return {k,i}; } return null; };
+  const hasSub     =(k,sid)=>R[k].pairs.some(p=>p.starter.id===sid);
+
+  // Special case: a sub + a starter who currently has no sub → reassign.
+  const subA=findSub(a), subB=findSub(b), stA=findStarter(a), stB=findStarter(b);
+  let from=null,to=null;
+  if(subA&&stB){ from=subA; to=stB; } else if(subB&&stA){ from=subB; to=stA; }
+  if(from&&to){
+    const starter=R[to.k].starters[to.i];
+    if(!hasSub(to.k,starter.id)){
+      const moved=R[from.k].pairs[from.i].sub;
+      R[from.k].pairs.splice(from.i,1);
+      R[to.k].pairs.push({starter,sub:moved});
+      A.result=R; A.benched=bench; csSel=null; save(); renderCsBuild(); return;
+    }
+  }
+
+  // Otherwise straight positional swap wherever each player sits.
+  const everyone=[];
+  Object.values(R).forEach(g=>{ everyone.push(...g.starters); g.pairs.forEach(p=>everyone.push(p.starter,p.sub)); });
+  everyone.push(...bench);
+  const pa=everyone.find(p=>p&&p.id===a), pb=everyone.find(p=>p&&p.id===b);
+  if(!pa||!pb){ csSel=null; renderCsBuild(); return; }
+  const swap=p=>p&&(p.id===a?pb:p.id===b?pa:p);
+  Object.keys(R).forEach(k=>{
+    R[k].starters=R[k].starters.map(swap);
+    R[k].pairs=R[k].pairs.map(p=>({starter:swap(p.starter),sub:swap(p.sub)}));
+  });
+  A.result=R; A.benched=bench.map(swap);
+  csSel=null; save(); renderCsBuild();
+};
+
+/* ---- mail / poster -------------------------------------------------- */
+window.csMail=mode=>{
+  const ctx=csCtx(); if(!ctx) return;
+  const A=db.cs.assign[ctx.ev.id+'|'+ctx.slot]; if(!A) return;
+  const txt=csMailText(ctx.team,A.groups,A,mode);
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box" style="width:min(620px,94vw)"><h3>Mail — Team ${ctx.team}</h3>
+    <div class="row"><button class="btn ${mode==='whatsapp'?'':'ghost'}" id="cmW">WhatsApp</button>
+    <button class="btn ${mode==='ingame'?'':'ghost'}" id="cmI">In-game mail</button>
+    <span class="muted">${txt.length} chars</span></div>
+    <textarea readonly style="min-height:320px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px">${csEsc(txt)}</textarea>
+    <div class="row" style="margin:10px 0 0"><button class="btn" id="cmC">📋 Copy</button>
+    <button class="btn ghost" id="cmX">Close</button></div></div>`;
+  document.body.appendChild(wrap);
+  wrap.onclick=e=>{ if(e.target===wrap) wrap.remove(); };
+  wrap.querySelector('#cmX').onclick=()=>wrap.remove();
+  wrap.querySelector('#cmW').onclick=()=>{ wrap.remove(); csMail('whatsapp'); };
+  wrap.querySelector('#cmI').onclick=()=>{ wrap.remove(); csMail('ingame'); };
+  wrap.querySelector('#cmC').onclick=()=>navigator.clipboard.writeText(txt).then(()=>toast('Copied'));
+};
+
+window.csShowPoster=()=>{
+  const ctx=csCtx(); if(!ctx) return;
+  const A=db.cs.assign[ctx.ev.id+'|'+ctx.slot]; if(!A) return;
+  const svg=csPoster(ctx.team,A.groups,A);
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box" style="width:min(760px,94vw);max-height:90vh;overflow:auto"><h3>Poster — Team ${ctx.team}</h3>
+    <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:12px">${svg}</div>
+    <div class="row"><button class="btn ghost" id="cpS">Download SVG</button>
+    <button class="btn gold" id="cpP">Download PNG</button>
+    <button class="btn ghost" id="cpX">Close</button></div>
+    <p class="help">PNG uses the game-style fonts if your browser has loaded them; the SVG always keeps them.</p></div>`;
+  document.body.appendChild(wrap);
+  wrap.onclick=e=>{ if(e.target===wrap) wrap.remove(); };
+  wrap.querySelector('#cpX').onclick=()=>wrap.remove();
+  wrap.querySelector('#cpS').onclick=()=>csDownloadSVG(svg,`canyon_storm_team_${ctx.team}.svg`);
+  wrap.querySelector('#cpP').onclick=()=>csDownloadPNG(svg,`canyon_storm_team_${ctx.team}.png`);
+};
+
+// Record who subbed this week so sub duty rotates fairly next time.
+window.csLogSubs=()=>{
+  const ctx=csCtx(); if(!ctx) return;
+  const A=db.cs.assign[ctx.ev.id+'|'+ctx.slot]; if(!A) return;
+  const d=ctx.ev.date||csToday(); let n=0;
+  Object.values(A.result).forEach(g=>g.pairs.forEach(p=>{ db.cs.lastsub[p.starter.id]=d; n++; }));
+  save(); toast(`Logged ${n} sub pairing(s) for rotation`);
+};
+
+/* =====================================================================
+   CS SETUP TAB — starters / subs per group, per alliance
+   ===================================================================== */
+function renderCsSetup(){
+  const el=document.getElementById('csSetupArea'); if(!el) return;
+  const block=(which,title,note)=>{
+    const gs=db.cs.setups[which];
+    const tS=gs.reduce((s,g)=>s+g.starters,0), tB=gs.reduce((s,g)=>s+g.subs,0);
+    return `<h3>${title} <span class="muted" style="font-weight:400;font-size:12px">${note}</span></h3>
+      <table><thead><tr><th>Group</th><th>Kind</th><th style="width:90px">Starters</th><th style="width:90px">Subs</th></tr></thead><tbody>
+      ${gs.map((g,i)=>`<tr>
+        <td><input value="${csEsc(g.name)}" style="width:100%" onchange="csSetupEdit('${which}',${i},'name',this.value)">
+            <input value="${csEsc(g.short)}" style="width:100%;margin-top:4px;font-size:11px;color:var(--muted)" onchange="csSetupEdit('${which}',${i},'short',this.value)"></td>
+        <td><span class="badge ${g.kind==='roam'?'b-noon':g.kind==='power'?'b-guar':'b-wait'}">${g.kind}</span></td>
+        <td><input type="number" min="0" max="8" value="${g.starters}" style="width:70px" onchange="csSetupEdit('${which}',${i},'starters',+this.value)"></td>
+        <td><input type="number" min="0" max="8" value="${g.subs}" style="width:70px" onchange="csSetupEdit('${which}',${i},'subs',+this.value)"></td>
+      </tr>`).join('')}
+      <tr><td colspan="2" class="muted">Total</td><td><b>${tS}</b></td><td><b>${tB}</b></td></tr>
+      </tbody></table>`;
+  };
+  el.innerHTML=block('rulebringers','Rulebringers',"when we're the lone alliance")
+             +'<div style="height:18px"></div>'
+             +block('dawnbreakers','Dawnbreakers',"when we're one of the pair — mid groups get a Left/Right label at assign time");
+}
+window.csSetupEdit=(which,i,field,val)=>{
+  db.cs.setups[which][i][field]=val; save();
+  if(field==='starters'||field==='subs') renderCsSetup();
+};
+window.csSetupReset=()=>{
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box"><h3>Reset squad setup?</h3>
+    <p class="help">Reset both alliance setups to the defaults? Existing line-ups are not affected.</p>
+    <div class="row" style="margin:12px 0 0"><button class="btn warn" id="crY">Reset</button>
+    <button class="btn ghost" id="crN">Cancel</button></div></div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#crN').onclick=()=>wrap.remove();
+  wrap.querySelector('#crY').onclick=()=>{
+    db.cs.setups={rulebringers:JSON.parse(JSON.stringify(CS_DEFAULT_RB)),dawnbreakers:JSON.parse(JSON.stringify(CS_DEFAULT_DB))};
+    save(); wrap.remove(); renderCsSetup(); toast('Reset to defaults');
+  };
+};
+
+/* ---- wiring --------------------------------------------------------- */
+document.getElementById('csSearch').oninput=renderCsPlayers;
+document.getElementById('csAdd').onclick=()=>csEdit('');
+document.getElementById('csEvent').onchange=()=>{ csSel=null; renderCsBuild(); };
+document.getElementById('csSlot').onchange=()=>{ csSel=null; renderCsBuild(); };
+document.getElementById('csImport').onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{
+    const rows=String(r.result).replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n').split('\n')
+      .map(l=>l.split(',').map(c=>c.replace(/^"|"$/g,'').trim())).filter(c=>c[0]);
+    let added=0,skipped=0;
+    rows.forEach(c=>{
+      const name=c[0]; if(!name||norm(name)==='name') return;
+      if(csFind(name)){ skipped++; return; }
+      db.cs.roster.push({id:csUid(),name,power:Math.round(parseFloat(c[1])||0),
+        t1:CS_T1.includes(c[2])?c[2]:'Tank', ptype:CS_PTYPE.includes(c[3])?c[3]:'Holder'});
+      added++;
+    });
+    save(); renderCsPlayers();
+    toast(`Imported ${added}${skipped?`, skipped ${skipped} already present`:''}`);
+  };
+  r.readAsText(f); e.target.value='';
+};
+
+for(const n of ['csEdit','csDelete','csPullRoster','csAskAlliance','csClear','csSetupEdit','csSetupReset','csLogSubs']){
+  const f=window[n];
+  if(typeof f==='function') window[n]=function(){
+    if(!isAdmin()){ toast('View only — log in as admin to make changes','err'); return; }
+    return f.apply(this,arguments);
+  };
+}
+for(const id of ['csAdd','csImport']){
+  const e=document.getElementById(id); if(!e) continue;
+  (e.parentElement&&e.parentElement.tagName==='LABEL'?e.parentElement:e).classList.add('admin-only');
+}
+renderCsPlayers(); renderCsBuildTab(); renderCsSetup();
+
 </script>
 </body>
 </html>
