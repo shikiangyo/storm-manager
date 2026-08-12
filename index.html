@@ -694,10 +694,12 @@ function parseAvail(s){
   if(s==='not available'||s==='notavailable'||s==='n/a'||s==='na') return 'na';
   return null; // anything else must be reviewed by an officer
 }
-function addApps(lines){
+function addAppsResolved(lines){
   let added=0,dupes=0,reviewed=0; const fresh=[];
   for(const line of lines){
-    const parts=line.split(/[,;\t]/).map(x=>x.trim()).filter(Boolean);
+    const parts=line.split(/[,;\t]/)
+                    .map(x=>x.trim().replace(/^["']+|["']+$/g,'').trim())
+                    .filter(Boolean);
     if(!parts.length) continue;
     const name=parts[0];
     if(/^name$/i.test(name)) continue; // header row
@@ -1010,8 +1012,139 @@ window.pollCommit   = ()=>{
   pollRows=[]; renderPollRows();
   document.getElementById('pollProgress').innerHTML='';
   document.getElementById('pollClear').style.display='none';
-  addApps(lines);
+  addApps(lines, { skipLink:true });
 };
+
+/* ---------------------------------------------------------------------
+   Unknown names on import get the same treatment as the Storm Players
+   link dialog: match to an existing player (which records the imported
+   spelling as an alias, so it matches automatically next time), or add
+   them as a genuinely new player.
+   --------------------------------------------------------------------- */
+let evLinkQueue = [];      // [{name, avail}] awaiting a decision
+let evLinkKnown = [];      // already-resolved lines held back until we're done
+
+function addApps(lines, opts){
+  opts=opts||{};
+  const parsed = [];
+  for (const line of lines){
+    const parts = String(line).split(/[,;\t]/)
+        .map(x=>x.trim().replace(/^["']+|["']+$/g,'').trim())
+        .filter(Boolean);
+    if (!parts.length) continue;
+    if (/^name$/i.test(parts[0])) continue;
+    parsed.push({ name: parts[0], avail: parts[1] || '' });
+  }
+  if (!parsed.length){ addAppsResolved(lines); return; }
+
+  // the screenshot importer already runs its own review step, so it opts out
+  if (opts.skipLink){ addAppsResolved(parsed.map(p=>`${p.name}, ${p.avail}`)); return; }
+
+  const known = [], unknown = [];
+  for (const p of parsed) (resolveKey(p.name) ? known : unknown).push(p);
+
+  if (!unknown.length){ addAppsResolved(parsed.map(p=>`${p.name}, ${p.avail}`)); return; }
+
+  evLinkKnown = known;
+  evLinkQueue = unknown;
+  evRenderLink();
+}
+
+function evSuggest(name){
+  return Object.values(db.players)
+    .map(p=>({ name:p.name, s:csSimilar(name,p.name) }))
+    .sort((a,b)=>b.s-a.s)
+    .filter(r=>r.s>=0.45)
+    .slice(0,3);
+}
+
+function evFinishLink(){
+  const wrap=document.querySelector('.modal.evlink'); if(wrap) wrap.remove();
+  const lines = evLinkKnown.map(p=>`${p.name}, ${p.avail}`);
+  evLinkKnown = []; evLinkQueue = [];
+  if (lines.length) addAppsResolved(lines);
+  else { renderApps(); renderReview(); toast('Nothing added','err'); }
+}
+
+function evRenderLink(){
+  const old=document.querySelector('.modal.evlink'); if(old) old.remove();
+  if(!evLinkQueue.length){ evFinishLink(); return; }
+
+  const wrap=document.createElement('div'); wrap.className='modal evlink';
+  wrap.innerHTML=`<div class="box" style="width:min(580px,94vw);max-height:88vh;overflow:auto">
+    <h3>${evLinkQueue.length} name${evLinkQueue.length===1?'':'s'} not on the roster</h3>
+    <p class="help">Match each one to an existing player — that records the imported spelling as a former name,
+      so it matches automatically from now on — or add them as a new player.
+      ${evLinkKnown.length?`<br>The other <b>${evLinkKnown.length}</b> name${evLinkKnown.length===1?'':'s'} matched already and will be added when you're done.`:''}</p>
+    <div id="evLinkList"></div>
+    <div class="row" style="margin:12px 0 0">
+      <button class="btn ok" id="elDone">Done — add ${evLinkKnown.length} applicant${evLinkKnown.length===1?'':'s'}</button>
+      <span style="flex:1"></span>
+      <button class="btn" id="elAllNew">Add all ${evLinkQueue.length} as new</button>
+    </div></div>`;
+  document.body.appendChild(wrap);
+  wrap.onclick=e=>{ if(e.target===wrap) evFinishLink(); };
+  wrap.querySelector('#elDone').onclick=()=>evFinishLink();
+  wrap.querySelector('#elAllNew').onclick=()=>{
+    evLinkKnown.push(...evLinkQueue); evLinkQueue=[]; evFinishLink();
+  };
+
+  const list=wrap.querySelector('#evLinkList');
+  // don't offer a player who is already an applicant in this batch
+  const taken=new Set(evLinkKnown.map(p=>resolveKey(p.name)).filter(Boolean));
+
+  evLinkQueue.forEach(item=>{
+    const row=document.createElement('div');
+    row.style.cssText='padding:10px 0;border-top:1px solid var(--border)';
+    const sug=evSuggest(item.name).filter(r=>!taken.has(resolveKey(r.name)));
+    row.innerHTML=`
+      <div class="row" style="margin:0 0 6px">
+        <b style="flex:1">${esc(item.name)}</b>
+        <span class="muted" style="font-size:11px">${esc(item.avail||'no slot')}</span>
+        <button class="btn ghost" data-new="1">+ Add as new</button>
+      </div>
+      ${sug.length?`<div class="row" style="margin:0 0 6px">Did you mean: ${sug.map(r=>
+        `<button class="btn ghost" data-pick="${esc(r.name).replace(/"/g,'&quot;')}" style="border-color:var(--green)">
+          ${esc(r.name)} <span class="muted" style="font-size:11px">${Math.round(r.s*100)}%</span>
+        </button>`).join('')}</div>`
+        :'<p class="help" style="margin:0 0 6px">No close matches on the roster.</p>'}
+      <input type="text" placeholder="…or search the roster" data-search="1" style="width:100%">
+      <div data-results="1"></div>`;
+    list.appendChild(row);
+
+    const link=(playerName)=>{
+      const p=peekPlayer(playerName);
+      if(p){
+        p.aliases=p.aliases||[];
+        const k=norm(item.name);
+        if(norm(p.name)!==k && !p.aliases.includes(k)) p.aliases.push(k);
+        evLinkKnown.push({ name:p.name, avail:item.avail });
+      }
+      evLinkQueue=evLinkQueue.filter(q=>q!==item);
+      save(); evRenderLink();
+    };
+    row.querySelector('[data-new]').onclick=()=>{
+      evLinkKnown.push(item);
+      evLinkQueue=evLinkQueue.filter(q=>q!==item);
+      evRenderLink();
+    };
+    row.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>link(b.dataset.pick));
+
+    const box=row.querySelector('[data-search]'), res=row.querySelector('[data-results]');
+    box.oninput=()=>{
+      const q=norm(box.value);
+      if(!q){ res.innerHTML=''; return; }
+      const hits=Object.values(db.players)
+        .filter(p=>norm(p.name).includes(q) && !taken.has(resolveKey(p.name)))
+        .slice(0,6);
+      res.innerHTML=hits.length
+        ? `<div class="row" style="margin:6px 0 0">${hits.map(p=>
+            `<button class="btn ghost" data-hit="${esc(p.name).replace(/"/g,'&quot;')}">${esc(p.name)}</button>`).join('')}</div>`
+        : '<p class="help" style="margin:6px 0 0">Nobody on the roster matches that.</p>';
+      res.querySelectorAll('[data-hit]').forEach(b=>b.onclick=()=>link(b.dataset.hit));
+    };
+  });
+}
 
 function renderReview(){
   const el=document.getElementById('reviewList');
