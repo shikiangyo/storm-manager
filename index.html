@@ -135,21 +135,6 @@
       <input type="file" id="csvFile" accept=".csv,.txt">
       <button class="btn ghost" id="btnClearApps">Clear applications</button>
     </div>
-
-    <div class="panel" style="margin:14px 0;background:var(--panel2,rgba(255,255,255,.03))">
-      <h3 style="margin-top:0">📷 Import from poll screenshots</h3>
-      <p class="help">Screenshot the in-game vote results — one shot per screenful, all options — and drop them in
-        together. Each screenshot says which option it is, so they can go in any order. Reading happens
-        <b>entirely on this device</b>; the images are never uploaded or saved anywhere.
-        Check the option mapping below matches how this week's poll was written.</p>
-      <div id="pollMap" class="row"></div>
-      <div class="row" style="margin-top:8px">
-        <label>Screenshots <input type="file" id="pollFiles" accept="image/*" multiple></label>
-        <button class="btn ghost" id="pollClear" style="display:none">Discard these</button>
-      </div>
-      <div id="pollProgress" class="help"></div>
-      <div id="pollResult"></div>
-    </div>
     <textarea id="pasteBox" placeholder="Paste applications here, one per line:&#10;DragonSlayer, both&#10;WarKitten, noon&#10;Bob, evening"></textarea>
     <div class="row" style="margin-top:8px">
       <button class="btn" id="btnParsePaste">Add pasted lines</button>
@@ -728,293 +713,6 @@ function addAppsResolved(lines){
     lateWaitlist(fresh); toast(`${added} late applicant${added===1?'':'s'} added to the waitlist`+revMsg);
   }
 }
-/* =====================================================================
-   ============  POLL SCREENSHOT IMPORT  ===============================
-   Reads the in-game vote screenshots with Tesseract, entirely in the
-   browser. Nothing is uploaded and nothing is stored — the File objects
-   are read into a canvas, OCR'd, and dropped when the page moves on.
-   ===================================================================== */
-
-/* Parser for Last War alliance vote screenshots.
-   Anchors on the "Power:NNNNNNNNN" line under every row, which OCRs
-   reliably, then lifts the name out of the band directly above it by
-   geometry rather than by clustering text into lines. */
-
-function parsePollWords(words, imgW, imgH){
-  const NAME_X = 0.335 * imgW;   // rank badge ~0.26w, gender icon ~0.31w, name ~0.35w
-  const txtOf = ws => ws.map(w=>w.text).join(' ');
-
-  const clean = ws => ws
-      .map(w=>w.text)
-      .filter(t => /[\p{L}\p{N}]/u.test(t))
-      .join(' ')
-      .replace(/\bL[VWY]\.?\s*\d+\b/gi,'')
-      .replace(/\bPower[:;.]?\s*\d+/gi,'')
-      .replace(/\s+/g,' ')
-      .replace(/^[^\p{L}\p{N}]+/u,'')
-      .replace(/[^\p{L}\p{N})\]]+$/u,'')
-      .trim();
-
-  let option = null;
-  const band = w => Math.round(w.bbox.y0 / Math.max(1, 0.012*imgH));
-  const all = [...words].sort((a,b)=>band(a)-band(b) || a.bbox.x0-b.bbox.x0);
-  const flat = txtOf(all);
-  const m = flat.match(/chose\s*option\s*([0-9])/i) || flat.match(/option\s*([0-9])/i);
-  if (m) option = +m[1];
-
-  let listTop = 0;
-  const optWord = all.find(w=>/^option$/i.test(w.text));
-  if (optWord) listTop = optWord.bbox.y1;
-
-  const powers = [];
-  for (const w of all){
-    if (w.bbox.y0 <= listTop) continue;
-    const t = w.text.replace(/\s+/g,'');
-    const mm = t.match(/^power[:;.]?([0-9]{6,})$/i) || t.match(/^([0-9]{8,10})$/);
-    if (mm) powers.push({ y: w.bbox.y0, power: mm[1] });
-  }
-  powers.sort((a,b)=>a.y-b.y);
-  if (!powers.length) return { option, players: [], unreadable: 0, rowGap: 0 };
-
-  const gaps = powers.slice(1).map((p,i)=>p.y-powers[i].y).filter(g=>g>0);
-  const rowGap = gaps.length
-      ? gaps.slice().sort((a,b)=>a-b)[Math.floor(gaps.length/2)]
-      : 0.081 * imgH;
-
-  const nameIn = (top, bottom) => {
-    const ws = all.filter(w => w.bbox.x0 >= NAME_X
-                            && w.bbox.y0 > top && w.bbox.y0 < bottom
-                            && !/power|^l[vwy]\.?\d*$/i.test(w.text));
-    if (!ws.length) return '';
-    ws.sort((a,b)=>a.bbox.x0-b.bbox.x0);
-    return clean(ws);
-  };
-
-  const players = [];
-  let unreadable = 0;
-  for (const p of powers){
-    const name = nameIn(Math.max(listTop, p.y - rowGap*0.80), p.y - rowGap*0.10);
-    if (name && name.length >= 2) players.push({ name, power: p.power });
-    else { players.push({ name:'', power: p.power }); unreadable++; }
-  }
-
-  const last = powers[powers.length-1];
-  const tail = nameIn(last.y + rowGap*0.15, last.y + rowGap*0.95);
-  if (tail && tail.length >= 2) players.push({ name: tail, power: null });
-
-  return { option, players, unreadable, rowGap };
-}
-
-
-// Which availability each poll option means, per mode. Editable before import
-// because whoever writes the poll picks the option order.
-const POLL_MAP_DEFAULT = {
-  canyon: { 1:'both', 2:'na' },
-  desert: { 1:'noon', 2:'evening', 3:'both', 4:'na' }
-};
-let pollMap  = JSON.parse(JSON.stringify(POLL_MAP_DEFAULT));
-let pollRows = [];        // {name, power, option, avail, match, score, id}
-let pollWorker = null;
-
-const AVAIL_LABEL = { noon:'noon', evening:'evening', both:'both', na:'not available' };
-
-function renderPollMap(){
-  const el = document.getElementById('pollMap'); if(!el) return;
-  const mode = document.getElementById('evMode').value;
-  const map = pollMap[mode];
-  el.innerHTML = Object.keys(map).map(o=>`<label style="font-size:12px">Option ${o}
-    <select onchange="pollSetMap('${mode}',${o},this.value)">
-      ${Object.keys(AVAIL_LABEL).map(v=>`<option value="${v}"${map[o]===v?' selected':''}>${AVAIL_LABEL[v]}</option>`).join('')}
-    </select></label>`).join('')
-    + `<button class="mini" onclick="pollResetMap()" title="Back to the usual mapping">reset</button>`;
-}
-window.pollSetMap = (mode,opt,val)=>{
-  pollMap[mode][opt]=val;
-  pollRows.forEach(r=>{ if(r.option===opt) r.avail=val; });   // re-slot live
-  renderPollMap(); renderPollRows();
-};
-window.pollResetMap = ()=>{ pollMap = JSON.parse(JSON.stringify(POLL_MAP_DEFAULT)); renderPollMap(); renderPollRows(); };
-
-// Suggest roster players for an OCR'd name. Reuses the same fuzzy matcher
-// as the Storm Players name-linking dialog.
-function pollSuggest(name){
-  const pool = [...new Set([
-    ...Object.values(db.players).map(p=>p.name),
-    ...db.cs.roster.map(p=>p.name),
-    ...db.cs.roster.flatMap(p=>p.aliases||[])
-  ])];
-  return pool.map(n=>({name:n, s:csSimilar(name,n)}))
-             .sort((a,b)=>b.s-a.s)
-             .filter(r=>r.s>=0.45)
-             .slice(0,3);
-}
-
-async function pollWorkerGet(setStatus){
-  if (pollWorker) return pollWorker;
-  if (!window.Tesseract){
-    setStatus('Fetching the text-recognition library (one time, then cached)…');
-    await new Promise((res,rej)=>{
-      const s=document.createElement('script');
-      s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
-      s.onload=res; s.onerror=()=>rej(new Error('Could not load the text-recognition library'));
-      document.head.appendChild(s);
-    });
-  }
-  setStatus('Starting the text recogniser…');
-  pollWorker = await Tesseract.createWorker('eng');
-  return pollWorker;
-}
-
-// Draw the image at a given scale and hand the canvas to Tesseract.
-async function pollOcrPass(bitmap, worker, scale){
-  const maxW = 3000;
-  const s = Math.min(scale, maxW / bitmap.width);
-  const w = Math.max(1,Math.round(bitmap.width*s)), h = Math.max(1,Math.round(bitmap.height*s));
-  const c = document.createElement('canvas'); c.width=w; c.height=h;
-  const ctx = c.getContext('2d');
-  ctx.imageSmoothingQuality='high';
-  ctx.drawImage(bitmap,0,0,w,h);
-  const { data } = await worker.recognize(c, {}, { blocks:true });
-  const words = [];
-  if (Array.isArray(data.words) && data.words.length) words.push(...data.words);
-  else (data.blocks||[]).forEach(b=>(b.paragraphs||[]).forEach(p=>(p.lines||[]).forEach(l=>(l.words||[]).forEach(x=>words.push(x)))));
-  c.width=c.height=0;                       // release the pixels straight away
-  return parsePollWords(words, w, h);
-}
-
-// Turn merged OCR rows into review rows: resolve each name against the
-// roster and apply the option -> slot mapping.
-function pollBuildRows(rows, mode){
-  return rows.map(r=>{
-    const sug = r.name ? pollSuggest(r.name) : [];
-    const top = sug[0], second = sug[1];
-    // accept a roster spelling when it's a close match and clearly ahead of
-    // the runner-up; otherwise leave it for a one-tap confirmation
-    const auto = top && (top.s >= 0.90
-                      || (top.s >= 0.82 && (!second || top.s - second.s >= 0.08)));
-    return {
-      id: 'p'+Math.random().toString(36).slice(2,8),
-      raw: r.name, power: r.power, option: r.option,
-      name: auto ? top.name : r.name,
-      score: top ? top.s : 0,
-      sug,
-      avail: (r.option!=null && pollMap[mode] && pollMap[mode][r.option]) || ''
-    };
-  });
-}
-
-async function pollHandleFiles(files){
-  const setStatus = t => document.getElementById('pollProgress').innerHTML = t;
-  const mode = document.getElementById('evMode').value;
-  let worker;
-  try { worker = await pollWorkerGet(setStatus); }
-  catch(e){ setStatus(`<span style="color:var(--red)">${esc(e.message)} — check your connection, or use the CSV/paste box instead.</span>`); return; }
-
-  const seen = new Map();            // power -> row  (dedupes overlapping shots)
-  let noOption = 0, blanks = 0, n = 0;
-
-  for (const f of files){
-    n++;
-    setStatus(`Reading screenshot ${n} of ${files.length}…`);
-    let bitmap;
-    try { bitmap = await createImageBitmap(f); }
-    catch(e){ continue; }
-    let passes = [];
-    try {
-      passes.push(await pollOcrPass(bitmap, worker, 1.5));
-      passes.push(await pollOcrPass(bitmap, worker, 3));
-    } catch(e){ /* keep whatever the first pass gave */ }
-    bitmap.close && bitmap.close();
-
-    const option = passes.map(p=>p.option).find(o=>o!=null) ?? null;
-    if (option==null) noOption++;
-
-    // merge the passes on the power number, keeping the fullest reading
-    const merged = new Map(); const tails = [];
-    for (const p of passes) for (const row of p.players){
-      if (!row.power){ if(row.name) tails.push(row); continue; }
-      const cur = merged.get(row.power);
-      if (!cur || (!cur.name && row.name) || (row.name && row.name.length > cur.name.length)) merged.set(row.power, row);
-    }
-    const rows = [...merged.values()];
-    for (const t of tails) if(!rows.some(r=>r.name && csSimilar(r.name,t.name)>0.9)) rows.push(t);
-
-    for (const r of rows){
-      const key = r.power || ('n:'+norm(r.name));
-      if (seen.has(key)){                     // same row in an overlapping shot
-        const cur = seen.get(key);
-        if (!cur.name && r.name) cur.name = r.name;
-        if (cur.option==null) cur.option = option;
-        continue;
-      }
-      if (!r.name) blanks++;
-      seen.set(key, { name:r.name, power:r.power, option });
-    }
-  }
-
-  pollRows = pollBuildRows([...seen.values()], mode);
-
-  const msg = [];
-  msg.push(`<b>${pollRows.length}</b> row${pollRows.length===1?'':'s'} found in ${files.length} screenshot${files.length===1?'':'s'}`);
-  if (blanks) msg.push(`<span style="color:var(--red)">${blanks} name${blanks===1?'':'s'} unreadable — type ${blanks===1?'it':'them'} in below</span>`);
-  if (noOption) msg.push(`<span style="color:var(--red)">${noOption} screenshot${noOption===1?'':'s'} had no “chose option N” header — set the slot manually</span>`);
-  setStatus(msg.join(' · '));
-  document.getElementById('pollClear').style.display = pollRows.length ? '' : 'none';
-  renderPollRows();
-}
-
-function renderPollRows(){
-  const el = document.getElementById('pollResult'); if(!el) return;
-  if (!pollRows.length){ el.innerHTML=''; return; }
-  const mode = document.getElementById('evMode').value;
-  pollRows.forEach(r=>{ if(!r.avail && r.option!=null) r.avail = pollMap[mode][r.option] || ''; });
-
-  const dupNames = {};
-  pollRows.forEach(r=>{ const k=norm(r.name); if(k) dupNames[k]=(dupNames[k]||0)+1; });
-
-  const ready = pollRows.filter(r=>r.name && r.avail).length;
-  el.innerHTML = `<table style="margin-top:10px"><thead><tr>
-      <th style="width:34px">opt</th><th>Name</th><th style="width:150px">Slot</th><th style="width:30px"></th>
-    </tr></thead><tbody>${pollRows.map((r,i)=>{
-    const dup = r.name && dupNames[norm(r.name)]>1;
-    const weak = r.name && r.score>0 && r.score<1 && r.sug.length;
-    const unknown = r.name && r.score===0;
-    return `<tr>
-      <td class="muted">${r.option??'—'}</td>
-      <td>
-        <input value="${esc(r.name)}" placeholder="${r.raw?'':'could not read — type the name'}"
-               style="width:100%${r.name?'':';border-color:var(--red)'}"
-               onchange="pollEditName(${i},this.value)">
-        ${r.raw && r.raw!==r.name ? `<div class="muted" style="font-size:11px">read as “${esc(r.raw)}”</div>`:''}
-        ${weak ? `<div style="font-size:11px">Did you mean: ${r.sug.map(s=>`<button class="mini" onclick="pollPick(${i},'${esc(s.name).replace(/'/g,"&#39;")}')">${esc(s.name)} <span class="muted">${Math.round(s.s*100)}%</span></button>`).join(' ')}</div>`:''}
-        ${unknown ? `<div class="muted" style="font-size:11px">not on the roster — will be added as a new player</div>`:''}
-        ${dup ? `<div style="font-size:11px;color:var(--red)">appears twice — they may have changed their vote</div>`:''}
-      </td>
-      <td><select onchange="pollEditAvail(${i},this.value)">
-        <option value="">choose…</option>
-        ${Object.keys(AVAIL_LABEL).map(v=>`<option value="${v}"${r.avail===v?' selected':''}>${AVAIL_LABEL[v]}</option>`).join('')}
-      </select></td>
-      <td><button class="mini" title="Drop this row" onclick="pollDrop(${i})">✕</button></td>
-    </tr>`;}).join('')}</tbody></table>
-    <div class="row" style="margin-top:10px">
-      <button class="btn ok" onclick="pollCommit()"${ready?'':' disabled'}>✓ Add ${ready} applicant${ready===1?'':'s'}</button>
-      <span class="muted">${pollRows.length-ready?`${pollRows.length-ready} row${pollRows.length-ready===1?'':'s'} still need a name and slot`:'all rows ready'}</span>
-    </div>`;
-}
-window.pollEditName = (i,v)=>{ pollRows[i].name=v.trim(); pollRows[i].score=1; renderPollRows(); };
-window.pollPick     = (i,v)=>{ pollRows[i].name=v; pollRows[i].score=1; renderPollRows(); };
-window.pollEditAvail= (i,v)=>{ pollRows[i].avail=v; renderPollRows(); };
-window.pollDrop     = i=>{ pollRows.splice(i,1); renderPollRows();
-  document.getElementById('pollClear').style.display = pollRows.length?'':'none'; };
-window.pollCommit   = ()=>{
-  const lines = pollRows.filter(r=>r.name&&r.avail).map(r=>`${r.name}, ${AVAIL_LABEL[r.avail]}`);
-  if(!lines.length){ toast('Nothing ready to add','err'); return; }
-  pollRows=[]; renderPollRows();
-  document.getElementById('pollProgress').innerHTML='';
-  document.getElementById('pollClear').style.display='none';
-  addApps(lines, { skipLink:true });
-};
-
 /* ---------------------------------------------------------------------
    Unknown names on import get the same treatment as the Storm Players
    link dialog: match to an existing player (which records the imported
@@ -1024,8 +722,7 @@ window.pollCommit   = ()=>{
 let evLinkQueue = [];      // [{name, avail}] awaiting a decision
 let evLinkKnown = [];      // already-resolved lines held back until we're done
 
-function addApps(lines, opts){
-  opts=opts||{};
+function addApps(lines){
   const parsed = [];
   for (const line of lines){
     const parts = String(line).split(/[,;\t]/)
@@ -1036,9 +733,6 @@ function addApps(lines, opts){
     parsed.push({ name: parts[0], avail: parts[1] || '' });
   }
   if (!parsed.length){ addAppsResolved(lines); return; }
-
-  // the screenshot importer already runs its own review step, so it opts out
-  if (opts.skipLink){ addAppsResolved(parsed.map(p=>`${p.name}, ${p.avail}`)); return; }
 
   const known = [], unknown = [];
   for (const p of parsed) (resolveKey(p.name) ? known : unknown).push(p);
@@ -1108,8 +802,7 @@ function evRenderLink(){
           ${esc(r.name)} <span class="muted" style="font-size:11px">${Math.round(r.s*100)}%</span>
         </button>`).join('')}</div>`
         :'<p class="help" style="margin:0 0 6px">No close matches on the roster.</p>'}
-      <input type="text" placeholder="…or search the roster" data-search="1" style="width:100%">
-      <div data-results="1"></div>`;
+      <button class="btn ghost" data-browse="1">📋 Choose from the roster…</button>`;
     list.appendChild(row);
 
     const link=(playerName)=>{
@@ -1129,21 +822,59 @@ function evRenderLink(){
       evRenderLink();
     };
     row.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>link(b.dataset.pick));
-
-    const box=row.querySelector('[data-search]'), res=row.querySelector('[data-results]');
-    box.oninput=()=>{
-      const q=norm(box.value);
-      if(!q){ res.innerHTML=''; return; }
-      const hits=Object.values(db.players)
-        .filter(p=>norm(p.name).includes(q) && !taken.has(resolveKey(p.name)))
-        .slice(0,6);
-      res.innerHTML=hits.length
-        ? `<div class="row" style="margin:6px 0 0">${hits.map(p=>
-            `<button class="btn ghost" data-hit="${esc(p.name).replace(/"/g,'&quot;')}">${esc(p.name)}</button>`).join('')}</div>`
-        : '<p class="help" style="margin:6px 0 0">Nobody on the roster matches that.</p>';
-      res.querySelectorAll('[data-hit]').forEach(b=>b.onclick=()=>link(b.dataset.hit));
-    };
+    row.querySelector('[data-browse]').onclick=()=>rosterPicker({
+      title:`Who is "${item.name}"?`,
+      exclude:[...taken],
+      onPick:p=>link(p.name)
+    });
   });
+}
+
+/* A scrollable, filterable list of roster players. Typing is optional —
+   several names use characters you can't reasonably type, so the whole
+   roster is always browsable. */
+function rosterPicker(opts){
+  const { onPick, exclude, title } = opts || {};
+  const skip = new Set(exclude || []);
+  const wrap = document.createElement('div');
+  wrap.className = 'modal rosterpick';
+  wrap.innerHTML = `<div class="box" style="width:min(520px,94vw);max-height:88vh;display:flex;flex-direction:column">
+    <h3 style="margin-top:0">${esc(title || 'Choose a player')}</h3>
+    <input type="text" id="rpFilter" placeholder="Type to narrow the list (optional)" style="width:100%">
+    <div id="rpList" style="overflow:auto;margin-top:10px;flex:1;min-height:180px"></div>
+    <div class="row" style="margin:12px 0 0"><button class="btn ghost" id="rpX">Cancel</button>
+      <span class="muted" id="rpCount"></span></div></div>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.onclick = e => { if (e.target === wrap) close(); };
+  wrap.querySelector('#rpX').onclick = close;
+
+  const all = Object.values(db.players)
+    .filter(p => !skip.has(resolveKey(p.name)))
+    .sort((a,b)=>a.name.localeCompare(b.name, undefined, {sensitivity:'base'}));
+
+  const list = wrap.querySelector('#rpList');
+  const count = wrap.querySelector('#rpCount');
+  const draw = q => {
+    const shown = q ? all.filter(p => norm(p.name).includes(q)
+                                   || (p.aliases||[]).some(a=>a.includes(q))) : all;
+    count.textContent = `${shown.length} of ${all.length}`;
+    list.innerHTML = shown.length
+      ? shown.map(p=>`<button class="btn ghost" data-key="${esc(resolveKey(p.name))}"
+           style="display:block;width:100%;text-align:left;margin-bottom:4px">
+           ${esc(p.name)}${(p.aliases||[]).length?`<span class="muted" style="font-size:11px"> · also ${p.aliases.map(esc).join(', ')}</span>`:''}
+         </button>`).join('')
+      : '<p class="help">Nobody matches that.</p>';
+    list.querySelectorAll('[data-key]').forEach(b=>b.onclick=()=>{
+      const p = db.players[b.dataset.key];
+      close();
+      if (p && onPick) onPick(p);
+    });
+  };
+  draw('');
+  const f = wrap.querySelector('#rpFilter');
+  f.oninput = () => draw(norm(f.value));
+  return wrap;
 }
 
 function renderReview(){
@@ -1176,18 +907,6 @@ function lateWaitlist(fresh){
   }
   renderAssignment();
 }
-document.getElementById('pollFiles').onchange=e=>{
-  const files=[...e.target.files]; e.target.value='';
-  if(files.length) pollHandleFiles(files);
-};
-document.getElementById('pollClear').onclick=()=>{
-  pollRows=[]; renderPollRows();
-  document.getElementById('pollProgress').innerHTML='';
-  document.getElementById('pollClear').style.display='none';
-};
-document.getElementById('evMode').addEventListener('change',()=>{ renderPollMap(); renderPollRows(); });
-renderPollMap();
-
 document.getElementById('csvFile').onchange=e=>{
   const f=e.target.files[0]; if(!f)return;
   const r=new FileReader();
@@ -1452,16 +1171,64 @@ window.uiRename=i=>{
 window.uiMerge=i=>{
   const k=rosterKeys[i];
   const t=db.players[k];
-  const nn=prompt(`Merge a duplicate into ${t.name}?\n\nType the duplicate's name. Its history (times picked, no-shows, bans, fairness dates) will be combined into ${t.name}, and the duplicate's name becomes a former name so future applications under it still match.`);
-  if(!nn||!nn.trim()) return;
-  const sk=resolveKey(nn);
-  if(!sk){ toast(`No player called "${nn.trim()}" found`,'err'); return; }
-  if(sk===k){ toast('That is the same player','err'); return; }
-  const s=db.players[sk];
-  if(!confirm(`Merge ${s.name} into ${t.name}?\n\n${t.name} keeps the combined history and gains "${s.name}" as a former name. ${s.name}'s roster entry is removed. This cannot be undone — export a JSON backup first if unsure.`)) return;
-  const err=mergePlayers(k,sk);
-  if(err){ toast(err,'err'); return; }
-  renderRoster(); toast(`${s.name} merged into ${t.name}`);
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box" style="width:min(520px,94vw)">
+    <h3>Merge a duplicate into ${esc(t.name)}</h3>
+    <p class="help">The duplicate's history — times picked, no-shows, bans and fairness dates — is combined into
+      <b>${esc(t.name)}</b>, and the duplicate's name becomes a former name so future applications under it still match.
+      The duplicate's roster entry is then removed.</p>
+    <label class="muted" style="font-size:12px">Type the duplicate's name</label>
+    <input id="umName" placeholder="e.g. an old spelling of their name">
+    <div class="row" style="margin:10px 0 0">
+      <button class="btn" id="umGo">Merge that name</button>
+      <span class="muted">or</span>
+      <button class="btn ghost" id="umBrowse">📋 Pick from the roster…</button>
+    </div>
+    <p class="help">Use the list if their name has characters you can't type.</p>
+    <div class="row" style="margin:10px 0 0"><button class="btn ghost" id="umX">Cancel</button></div></div>`;
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{ if(e.target===wrap) close(); };
+  wrap.querySelector('#umX').onclick=close;
+
+  const doMerge=sk=>{
+    if(sk===k){ toast('That is the same player','err'); return; }
+    const s=db.players[sk]; if(!s) return;
+    const conf=document.createElement('div'); conf.className='modal';
+    conf.innerHTML=`<div class="box"><h3>Merge ${esc(s.name)} into ${esc(t.name)}?</h3>
+      <p class="help"><b>${esc(t.name)}</b> keeps the combined history and gains
+        "${esc(s.name)}" as a former name. <b>${esc(s.name)}</b>'s roster entry is removed.
+        This cannot be undone — export a JSON backup first if you're unsure.</p>
+      <table style="margin:8px 0"><tr><th></th><th>${esc(t.name)}</th><th>${esc(s.name)}</th></tr>
+        <tr><td class="muted">Times picked</td><td>${t.selections||0}</td><td>${s.selections||0}</td></tr>
+        <tr><td class="muted">No-shows</td><td>${t.noShows||0}</td><td>${s.noShows||0}</td></tr>
+        <tr><td class="muted">Guaranteed</td><td>${t.guaranteed?'yes':'no'}</td><td>${s.guaranteed?'yes':'no'}</td></tr>
+      </table>
+      <div class="row" style="margin:12px 0 0"><button class="btn warn" id="umY">Merge</button>
+      <button class="btn ghost" id="umN">Cancel</button></div></div>`;
+    document.body.appendChild(conf);
+    conf.querySelector('#umN').onclick=()=>conf.remove();
+    conf.querySelector('#umY').onclick=()=>{
+      const err=mergePlayers(k,sk);
+      conf.remove(); close();
+      if(err){ toast(err,'err'); return; }
+      renderRoster(); toast(`${s.name} merged into ${t.name}`);
+    };
+  };
+
+  wrap.querySelector('#umGo').onclick=()=>{
+    const nn=wrap.querySelector('#umName').value.trim();
+    if(!nn){ toast('Type a name, or pick from the roster','err'); return; }
+    const sk=resolveKey(nn);
+    if(!sk){ toast(`No player called "${nn}" found`,'err'); return; }
+    doMerge(sk);
+  };
+  wrap.querySelector('#umBrowse').onclick=()=>rosterPicker({
+    title:`Merge who into ${t.name}?`,
+    exclude:[k],
+    onPick:p=>doMerge(resolveKey(p.name))
+  });
+  wrap.querySelector('#umName').focus();
 };
 window.clearBan=(i,mode)=>{
   const p=db.players[rosterKeys[i]];
@@ -1910,7 +1677,7 @@ for(const n of ['delApp','setAvail','dropMember','removeMember','removeWait','re
     return f.apply(this,arguments);
   };
 }
-for(const id of ['csvFile','btnClearApps','pasteBox','btnParsePaste','btnAssign','btnSaveEvent','pollFiles','pollClear',
+for(const id of ['csvFile','btnClearApps','pasteBox','btnParsePaste','btnAssign','btnSaveEvent',
   'newPlayerName','newPlayerGuar','btnAddPlayer','importJSON','btnWipe','setBanDays','btnSaveSettings']){
   const e=document.getElementById(id); if(!e) continue;
   (e.parentElement&&e.parentElement.tagName==='LABEL'?e.parentElement:e).classList.add('admin-only');
@@ -2710,8 +2477,7 @@ function csRenderLink(){
           <span class="muted" style="font-size:11px">${Math.round(r.s*100)}%</span>
         </button>`).join('')}</div>`
         :'<p class="help" style="margin:0 0 6px">No close matches found.</p>'}
-      <input type="text" placeholder="…or search for someone else to match" data-search="1" style="width:100%">
-      <div data-results="1"></div>`;
+      <button class="btn ghost" data-browse="1">📋 Choose from Storm Players…</button>`;
     list.appendChild(row);
 
     const link=rec=>{
@@ -2728,21 +2494,42 @@ function csRenderLink(){
     row.querySelectorAll('[data-id]').forEach(b=>b.onclick=()=>{
       const rec=db.cs.roster.find(p=>p.id===b.dataset.id); if(rec) link(rec);
     });
-    const box=row.querySelector('[data-search]'), res=row.querySelector('[data-results]');
-    box.oninput=()=>{
-      const q=norm(box.value);
-      if(!q){ res.innerHTML=''; return; }
-      const hits=pool.filter(p=>norm(p.name).includes(q)).slice(0,6);
-      res.innerHTML=hits.length
-        ? `<div class="row" style="margin:6px 0 0">${hits.map(p=>
-            `<button class="btn ghost" data-pick="${p.id}">${csEsc(p.name)}
-             <span class="muted" style="font-size:11px">${p.power?(p.power/1e6).toFixed(0)+'M':'no power'}</span></button>`).join('')}</div>`
-        : '<p class="help" style="margin:6px 0 0">No CS player matches that.</p>';
-      res.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{
-        const rec=db.cs.roster.find(p=>p.id===b.dataset.pick); if(rec) link(rec);
-      });
-    };
+    row.querySelector('[data-browse]').onclick=()=>csRosterPicker(name, pool, link);
   });
+}
+
+// Browsable list of Storm Players records, for names that can't be typed.
+function csRosterPicker(forName, pool, onPick){
+  const wrap=document.createElement('div'); wrap.className='modal rosterpick';
+  wrap.innerHTML=`<div class="box" style="width:min(520px,94vw);max-height:88vh;display:flex;flex-direction:column">
+    <h3 style="margin-top:0">Who is "${csEsc(forName)}"?</h3>
+    <input type="text" id="cpFilter" placeholder="Type to narrow the list (optional)" style="width:100%">
+    <div id="cpList" style="overflow:auto;margin-top:10px;flex:1;min-height:180px"></div>
+    <div class="row" style="margin:12px 0 0"><button class="btn ghost" id="cpX">Cancel</button>
+      <span class="muted" id="cpCount"></span></div></div>`;
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{ if(e.target===wrap) close(); };
+  wrap.querySelector('#cpX').onclick=close;
+
+  const all=[...pool].sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
+  const list=wrap.querySelector('#cpList'), count=wrap.querySelector('#cpCount');
+  const draw=q=>{
+    const shown=q?all.filter(p=>norm(p.name).includes(q)||(p.aliases||[]).some(a=>norm(a).includes(q))):all;
+    count.textContent=`${shown.length} of ${all.length}`;
+    list.innerHTML=shown.length
+      ? shown.map(p=>`<button class="btn ghost" data-id="${p.id}"
+          style="display:block;width:100%;text-align:left;margin-bottom:4px">
+          ${csEsc(p.name)} <span class="muted" style="font-size:11px">${p.power?(p.power/1e6).toFixed(0)+'M · '+csEsc(p.t1):'no power set'}</span>
+        </button>`).join('')
+      : '<p class="help">Nobody matches that.</p>';
+    list.querySelectorAll('[data-id]').forEach(b=>b.onclick=()=>{
+      const rec=all.find(p=>p.id===b.dataset.id); close(); if(rec) onPick(rec);
+    });
+  };
+  draw('');
+  const f=wrap.querySelector('#cpFilter');
+  f.oninput=()=>draw(norm(f.value));
 }
 
 window.csUnlink=(id,alias)=>{
