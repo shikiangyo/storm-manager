@@ -193,6 +193,16 @@
       <button class="btn" id="btnAddPlayer">Add</button>
       <input type="text" id="rosterSearch" placeholder="🔍 Search…" style="margin-left:auto">
     </div>
+    <p class="help">Tie-breaking: players are picked <b>least recently played</b> first. Where several share the same
+      last-played date, the app walks back one event at a time through the whole log and prefers, in this order:
+      <b>wasn't on the roster yet</b>, then <b>applied but not picked</b>, then <b>did not apply</b>, then <b>played</b>.
+      It keeps walking back until the records separate them; only identical records fall through to random.
+      The strip beside each name reads newest event first —
+      <span style="color:var(--muted);opacity:.6">–</span> not on the roster,
+      <span style="color:var(--green)">▪</span> applied but not picked,
+      <span style="color:var(--muted)">▫</span> did not apply, ● played.
+      A ban or no-show counts as played, so sitting one out earns no priority.
+      The refusal count is shown for information only — it is not used to sort.</p>
     <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 3 weeks (21 days) from the event date. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically. If the same person ended up as two roster entries (typo, different spelling), use 🔗 to merge the duplicate into the real one — histories are combined and the duplicate name becomes an alias.</p>
     <div id="rosterTable"></div>
   </div>
@@ -941,6 +951,66 @@ document.getElementById('btnAssign').onclick=()=>{
   if(pendingAssignment && !confirm('Re-run assignment? Manual changes (drops, promotes, role toggles, removals stay removed) will be redone from scratch.')) return;
   runAssign();
 };
+/* ---------------------------------------------------------------------
+   Fairness history for tie-breaking.
+
+   Players who share the same "last played" date used to come down to a
+   coin flip. So we read the whole saved event log for this mode and record
+   what each player was doing at every past event:
+
+     -    not on the roster yet, so never had the chance   (ranks first)
+     APL  applied and was not picked                       (ranks second)
+     DNV  on the roster but did not apply                  (ranks third)
+     P    played, or sat out a ban or no-show              (ranks last)
+
+   A ban or no-show counts as P deliberately: sitting one out must not earn
+   queue priority. The "-" state comes from the roster snapshot saved with
+   each event; where an old event has no snapshot we cannot tell "-" from
+   DNV, so it falls back to DNV.
+   --------------------------------------------------------------------- */
+const FAIR_RANK={'-':0, APL:1, DNV:2, P:3};
+
+function buildFairness(mode, beforeDate){
+  const evs=db.events.filter(e=>e.mode===mode && e.date && e.date<beforeDate)
+                     .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+  const dates=evs.map(e=>e.date);
+  const nameOf=m=>(m&&typeof m==='object')?m.name:m;
+  const st={}, snap={};
+  const put=(raw,date,code)=>{
+    const n=nameOf(raw); if(!n) return;
+    const k=resolveKey(n)||norm(n);
+    (st[k]=st[k]||{})[date]=code;
+  };
+  for(const e of evs){
+    for(const slot of ['noon','evening'])
+      for(const m of ((e.teams&&e.teams[slot])||[])) put(m,e.date,'P');
+    for(const m of (e.waitlist||[])) put(m,e.date,'APL');
+    for(const b of (e.banned||[]))   put(b,e.date,'P');   // a ban earns nothing
+    // roster snapshot, so we can tell "wasn't here yet" from "didn't apply"
+    if(Array.isArray(e.roster) && e.roster.length){
+      const s={};
+      for(const r of e.roster){ const n=nameOf(r); if(n) s[resolveKey(n)||norm(n)]=1; }
+      snap[e.date]=s;
+    }
+  }
+  return {dates,st,snap};
+}
+
+// Per-player history, newest event first, as a string the sort can compare
+// directly: walking back a week at a time until the records run out.
+function fairnessOf(F, player){
+  const k=resolveKey(player.name)||norm(player.name);
+  const row=F.st[k]||{};
+  const codes=F.dates.map(d=>{
+    if(row[d]) return row[d];
+    const s=F.snap[d];
+    return (s && !s[k]) ? '-' : 'DNV';        // no snapshot -> can't tell, assume DNV
+  });
+  const refused=codes.filter(c=>c==='APL').length;
+  const walk=codes.slice().reverse().map(c=>FAIR_RANK[c]).join('');
+  return {refused, walk, codes};
+}
+
 function runAssign(){
   if(!apps.length) return;
   const mode=document.getElementById('evMode').value;
@@ -953,10 +1023,20 @@ function runAssign(){
     if(a.avail==='na'){ notAvail.push({name:p.name}); continue; }
     (isBanned(p,mode,date)?banned:pool).push({...a,p});
   }
-  // selection order: guaranteed first, then by least-recently-picked; random tiebreak via pre-shuffle
+  /* Selection order: guaranteed first, then
+       1. least recently picked
+       2. walk back one event at a time through the whole log, preferring
+          whoever wasn't on the roster yet, then applied-and-refused, then
+          didn't apply, then played
+       3. random, once the records run out or match exactly               */
+  const F=buildFairness(mode,date);
+  for(const x of pool) x.f=fairnessOf(F,x.p);
   const rank=x=>x.p.lastSelected[mode]||'0000-00-00';
-  const guar=shuffle(pool.filter(x=>x.p.guaranteed)).sort((a,b)=>rank(a)<rank(b)?-1:rank(a)>rank(b)?1:0);
-  const rest=shuffle(pool.filter(x=>!x.p.guaranteed)).sort((a,b)=>rank(a)<rank(b)?-1:rank(a)>rank(b)?1:0);
+  const cmp=(a,b)=>
+       (rank(a)<rank(b)?-1:rank(a)>rank(b)?1:0)
+    || (a.f.walk<b.f.walk?-1:a.f.walk>b.f.walk?1:0);
+  const guar=shuffle(pool.filter(x=>x.p.guaranteed)).sort(cmp);
+  const rest=shuffle(pool.filter(x=>!x.p.guaranteed)).sort(cmp);
   const order=[...guar,...rest];
 
   const teams={noon:[],evening:[]}, waitlist=[];
@@ -985,7 +1065,9 @@ function runAssign(){
   const startRank=m=>(getPlayer(m.name).lastStarted||{})[mode]||'0000-00-00';
   for(const s of ['noon','evening'])
     teams[s]=shuffle(teams[s]).sort((a,b)=>(b.guaranteed-a.guaranteed)||(startRank(a)<startRank(b)?-1:startRank(a)>startRank(b)?1:0));
-  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]}))};
+  const fair={};
+  for(const x of pool) fair[x.p.name]={refused:x.f.refused, walk:x.f.walk};
+  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),fair,fairDates:F.dates};
   renderAssignment();
 }
 
@@ -996,7 +1078,19 @@ function renderAssignment(){
     const p=peekPlayer(name);
     if(!p) return '<span class="muted" style="font-size:11px">not in roster</span>';
     const la=(p.lastApplied||{})[A.mode];
-    return `<span class="muted" style="font-size:11px">picked ${fmtDate(p.lastSelected[A.mode])} · applied ${fmtDate(la)}</span>`;
+    const f=(A.fair||{})[name];
+    let extra='';
+    if(f){
+      const sym={
+        '0':'<span style="color:var(--muted);opacity:.6" title="not on the roster yet">–</span>',
+        '1':'<span style="color:var(--green)" title="applied, not picked">▪</span>',
+        '2':'<span style="color:var(--muted)" title="did not apply">▫</span>',
+        '3':'<span title="played">●</span>'
+      };
+      const strip=f.walk.slice(0,8).split('').map(c=>sym[c]||'').join('');
+      extra=` · refused ${f.refused}×${strip?' · '+strip:''}`;
+    }
+    return `<span class="muted" style="font-size:11px">picked ${fmtDate(p.lastSelected[A.mode])} · applied ${fmtDate(la)}${extra}</span>`;
   };
   const banBadge=name=>{
     const p=peekPlayer(name);
