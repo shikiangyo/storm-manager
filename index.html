@@ -2218,7 +2218,16 @@ function csDesertMail(team, groups, assign, wa, b, B){
   groups.forEach(g=>{
     const slot=assign.result[g.key];
     if(!slot.starters.length) return;
-    L.push(b(g.short.toUpperCase())+': '+csNames(slot.starters));
+    if(slot.pairs.length){
+      // this group has its own subs paired to starters
+      L.push('', b(g.short.toUpperCase()), wa?b('Starter \u21c4 Sub'):'Starter <-> Sub');
+      slot.starters.forEach(st=>{
+        const pr=slot.pairs.find(p=>p.starter.id===st.id);
+        L.push(`${st.name} ${wa?'\u21c4':'<->'} ${pr?pr.sub.name:'(no sub)'}`);
+      });
+    } else {
+      L.push(b(g.short.toUpperCase())+': '+csNames(slot.starters));
+    }
   });
   const bench=[...(assign.benched||[])].sort((a,b2)=>b2.power-a.power);
   if(bench.length){ L.push('', b('SUBSTITUTES')+': '+csNames(bench)); }
@@ -2351,6 +2360,7 @@ ${rivet(x+13,y+13)}${rivet(x+CW-13,y+13)}${rivet(x+13,y+h-13)}${rivet(x+CW-13,y+
     if(gR){ const R=card(gR,i*2+1,COLS[1],y); body+=R.svg; h=Math.max(h,R.h); }
     y+=h+16;
   }
+  const hasBench=isDesert&&bench.length>0;
   const footH=isDesert?Math.max(112, 46+Math.max((B.strategy||[]).length,Math.ceil(bench.length/2))*19):60;
   const H=y+footH+14, footY=y+6;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
@@ -2382,10 +2392,10 @@ ${B.posterTag?`<text x="340" y="304" text-anchor="middle" font-family="Oswald,'A
 ${body}
 ${isDesert?`
 <rect x="40" y="${footY}" width="600" height="${footH}" rx="6" fill="${T.sky1}" stroke="${T.border}" stroke-width="1"/>
-<line x1="392" y1="${footY+12}" x2="392" y2="${footY+footH-12}" stroke="${T.border}" stroke-width="1"/>
+${hasBench?`<line x1="392" y1="${footY+12}" x2="392" y2="${footY+footH-12}" stroke="${T.border}" stroke-width="1"/>`:''}
 <text x="60" y="${footY+28}" font-family="'Black Ops One',Impact,sans-serif" font-size="20" letter-spacing="1" fill="${T.ink}">STRATEGY</text>
 ${(B.strategy||[]).map((s,i)=>`<text x="60" y="${footY+54+i*19}" font-family="Oswald,'Arial Narrow',sans-serif" font-size="13" fill="${T.muted}">${csEsc(s)}</text>`).join('\n')}
-<text x="412" y="${footY+28}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="15" letter-spacing="2" fill="${T.accent}">SUBSTITUTES</text>
+${hasBench?`<text x="412" y="${footY+28}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="15" letter-spacing="2" fill="${T.accent}">SUBSTITUTES</text>`:''}
 ${bench.map((p,i)=>{const col=Math.floor(i/Math.ceil(bench.length/2)),row=i%Math.ceil(bench.length/2);
   return `<text x="${412+col*110}" y="${footY+52+row*19}" font-family="Oswald,'Arial Narrow',sans-serif" font-size="13" fill="${T.ink}">${csEsc(p.name)}</text>`;}).join('\n')}
 `:`
