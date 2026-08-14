@@ -2125,12 +2125,41 @@ function csPlace(players, groups, lastsub, roles){
         strongest and the 5th strongest, Right Oil the 2nd and 6th, etc.
      3. Whoever is left over tops up Float / Hospital.
    No T1 balancing pass here — the deal order is fixed and deliberate. */
+/* Desert placement.
+
+   Starters are ranked by power and dealt into a fixed slot order, so the
+   same positions always get the same strength band week to week:
+
+     1 Oil L   2 Oil R   3 Science  4 Float   5 Oil R
+     6 Oil L   7 Float   8 Science  9 Science 10 Info
+    11 Info   12 Float  13 Oil R   14 Oil L  15 Float
+    16 Science 17 Oil L  18 Oil R  19 Info   20 Float
+
+   That sequence assumes 4/4/4/3/5 (Oil L, Oil R, Science, Info, Float).
+   If the Storm Setup asks for different group sizes, a slot whose group is
+   already full is skipped, and anyone left over is dealt round-robin in the
+   order Oil L, Oil R, Science, Info, Float.
+
+   Anyone set as a Holder on Storm Players cannot take a Float slot. Non-
+   Holders are held back so the Float slots can be filled; if there still
+   aren't enough, Holders fill the gap and the build reports it.            */
+const DESERT_SLOTS=['loil','roil','sci','float','roil','loil','float','sci','sci','info',
+                    'info','float','roil','loil','float','sci','loil','roil','info','float'];
+const DESERT_FILL =['loil','roil','sci','info','float'];
+
 function csPlaceDesert(players, groups, lastsub, roles){
   roles=roles||{};
   const byPower=(a,b)=>b.power-a.power;
   const out={}; groups.forEach(g=>out[g.key]={starters:[],pairs:[],extraSubs:[]});
-  const roam=groups.find(g=>g.kind==='roam');
-  const dealt=groups.filter(g=>g!==roam);
+  const notes=[];
+
+  // map the sequence's names onto whatever groups the setup actually has
+  const roam=groups.find(g=>g.kind==='roam')||groups.find(g=>g.key==='float');
+  const byKey={};
+  for(const g of groups) byKey[g.key]=g;
+  if(roam) byKey.float=roam;
+  const slotGroup=k=>byKey[k]||null;
+
   const needStarters=groups.reduce((s,g)=>s+g.starters,0);
   const needSubs=groups.reduce((s,g)=>s+g.subs,0);
 
@@ -2147,31 +2176,55 @@ function csPlaceDesert(players, groups, lastsub, roles){
   const bench=players.filter(p=>!startIds.has(p.id));
 
   let pool=[...starters].sort(byPower);
+  const room={}; groups.forEach(g=>room[g.key]=g.starters);
 
-  // 1. Roamers into Float / Hospital (strongest first, up to its size).
-  if(roam){
-    const roamers=pool.filter(p=>p.ptype==='Roamer').slice(0,roam.starters);
-    const taken=new Set(roamers.map(p=>p.id));
-    out[roam.key].starters=roamers;
-    pool=pool.filter(p=>!taken.has(p.id));
+  // The running order: walk the fixed sequence, skipping any slot whose group
+  // the setup has already filled, then top up whatever is still short in the
+  // order Oil L, Oil R, Science, Info, Float.
+  const order=[], used={};
+  groups.forEach(g=>used[g.key]=0);
+  for(const k of DESERT_SLOTS){
+    const g=slotGroup(k); if(!g) continue;
+    if(used[g.key] < g.starters){ order.push(g); used[g.key]++; }
   }
-
-  // 2. Deal the rest round-robin, strongest first, in setup order.
-  const room={}; dealt.forEach(g=>room[g.key]=g.starters);
-  let moved=true;
-  while(pool.length&&moved){
-    moved=false;
-    for(const g of dealt){
-      if(!pool.length) break;
-      if(room[g.key]>0){ out[g.key].starters.push(pool.shift()); room[g.key]--; moved=true; }
+  const fillOrder=[...DESERT_FILL.map(slotGroup).filter(Boolean),
+                   ...groups.filter(g=>!DESERT_FILL.map(slotGroup).includes(g))];
+  let added=true, guard=0;
+  while(added && guard++ < 200){
+    added=false;
+    for(const g of fillOrder){
+      if(used[g.key] < g.starters){ order.push(g); used[g.key]++; added=true; }
     }
   }
 
-  // 3. Leftovers top up Float / Hospital.
-  if(roam) while(pool.length&&out[roam.key].starters.length<roam.starters) out[roam.key].starters.push(pool.shift());
+  const isFloat=g=>g===roam;
+  const canFloat=p=>p.ptype!=='Holder';
+  let floatSlotsLeft=order.filter(g=>isFloat(g)&&room[g.key]>0).length;
 
-  // Subs are normally a flat pool in Desert, but honour the setup if any
-  // group has been given subs.
+  for(const g of order){
+    if(!pool.length) break;
+    if(room[g.key]<=0) continue;               // setup says this group is full
+    let pick;
+    if(isFloat(g)){
+      const i=pool.findIndex(canFloat);
+      if(i>=0) pick=pool.splice(i,1)[0];
+      else { pick=pool.shift(); notes.push(`${pick.name} is a Holder but had to take a Float slot — not enough Roamers or Flex in this squad`); }
+      floatSlotsLeft--;
+    } else {
+      // hold non-Holders back if the remaining Float slots would run short
+      const spare=pool.filter(canFloat).length;
+      if(spare<=floatSlotsLeft){
+        const i=pool.findIndex(p=>!canFloat(p));
+        pick = i>=0 ? pool.splice(i,1)[0] : pool.shift();
+      } else pick=pool.shift();
+    }
+    out[g.key].starters.push(pick);
+    room[g.key]--;
+  }
+  // anyone still unplaced (setup smaller than the squad) goes to the bench
+  const leftover=pool.splice(0);
+
+  // Subs: a flat pool unless the setup gives groups their own subs.
   const subPool=[...bench].sort((a,b)=>{
     if(a.power!==b.power) return a.power-b.power;
     return (lastsub[a.id]||'0000-00-00').localeCompare(lastsub[b.id]||'0000-00-00');
@@ -2192,7 +2245,7 @@ function csPlaceDesert(players, groups, lastsub, roles){
     });
   });
 
-  return {result:out, benched:[...pool,...free,...subPool]};
+  return {result:out, benched:[...leftover,...free,...subPool], notes};
 }
 
 function csSideLabel(groups, side){
@@ -2728,7 +2781,9 @@ function renderCsBuild(){
       but the current squad setup wants <b>${needS} / ${needB}</b>. It'll still build — extra starters are trimmed by power,
       shortfalls topped up — but you may want to adjust sizes on the <b>CS Setup</b> tab.</div>`;
 
-  board.innerHTML=`${warn}${mismatch}
+  let placeNote='';
+  if(A && (A.notes||[]).length) placeNote=`<div class="banner warn" style="margin:0 0 12px">⚠ ${A.notes.map(esc).join('<br>')}</div>`;
+  board.innerHTML=`${warn}${mismatch}${placeNote}
     <div class="row">
       <span class="badge ${team==='A'?'b-guar':'b-noon'}" style="font-size:13px;padding:4px 12px">${lab.team}</span>
       <span class="badge b-wait">${MODES[mode]}</span>
@@ -2794,7 +2849,7 @@ function csRun(setupKey, side){
   const place=ctx.mode==='desert'?csPlaceDesert:csPlace;
   const res=place(ctx.picked, groups, db.cs.lastsub, roles);
   db.cs.assign[ctx.ev.id+'|'+ctx.slot]={
-    ...res, groups, setupKey,
+    ...res, groups, setupKey, notes:res.notes||[],
     gameMode:ctx.mode,
     teamLabel:ctx.lab.team, badgeTop:ctx.lab.badgeTop, badgeVal:ctx.lab.badgeVal,
     alliance:CS_ALLIANCE_LABEL[setupKey]||MODES[ctx.mode],
