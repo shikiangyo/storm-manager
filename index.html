@@ -2798,19 +2798,21 @@ function renderCsBuild(){
 
 function csLineupHtml(A,team){
   const pill=id=>csSel===id?'style="background:var(--accent);color:#1a1a1a;border-radius:5px;padding:1px 5px;cursor:pointer"':'style="cursor:pointer"';
+  // T1 type then power, on every row — starters, subs and the bench
+  const tag=p=>p.power
+      ? `<span class="cap">${csEsc(p.t1||'')} ${p.power.toLocaleString()}</span>`
+      : `<span class="cap" style="color:var(--red)">${csEsc(p.t1||'')} no power</span>`;
   const cards=A.groups.map((g,i)=>{
     const slot=A.result[g.key];
     const roam=g.kind==='roam';
     const rows=slot.pairs.length
       ? slot.starters.map(st=>{
           const pr=slot.pairs.find(p=>p.starter.id===st.id);
-          return `<li><span><span onclick="csTap('${st.id}')" ${pill(st.id)}>${csEsc(st.name)}</span>
-            <span class="cap">${csEsc(st.t1)}</span></span>
-            ${pr?`<span><span style="color:var(--green)">⇄ </span><span onclick="csTap('${pr.sub.id}')" ${pill(pr.sub.id)}>${csEsc(pr.sub.name)}</span></span>`
+          return `<li><span><span onclick="csTap('${st.id}')" ${pill(st.id)}>${csEsc(st.name)}</span> ${tag(st)}</span>
+            ${pr?`<span><span style="color:var(--green)">⇄ </span><span onclick="csTap('${pr.sub.id}')" ${pill(pr.sub.id)}>${csEsc(pr.sub.name)}</span> ${tag(pr.sub)}</span>`
                 :`<span onclick="csTap('${st.id}')" ${pill(st.id)} class="cap">no sub</span>`}</li>`;
         }).join('')
-      : slot.starters.map(st=>`<li><span><span onclick="csTap('${st.id}')" ${pill(st.id)}>${csEsc(st.name)}</span>
-          ${roam?'':`<span class="cap">${csEsc(st.t1)} · ${st.power.toLocaleString()}</span>`}</span></li>`).join('');
+      : slot.starters.map(st=>`<li><span><span onclick="csTap('${st.id}')" ${pill(st.id)}>${csEsc(st.name)}</span> ${tag(st)}</span></li>`).join('');
     return `<div class="obj"><h4><span>${roam?'FREE ROAMERS':'GROUP '+(i+1)}</span><span class="cap">${csEsc(g.short)}</span></h4>
       <ul>${rows||'<li class="muted">empty</li>'}</ul></div>`;
   }).join('');
@@ -2818,7 +2820,7 @@ function csLineupHtml(A,team){
       ? 'Now tap another player to swap them — or tap a starter with no sub to move this sub onto them.'
       : 'Tap a player, then tap another to swap them. Tap a sub then a sub-less starter to assign that sub to them.'}</div>
     <div class="obj-grid">${cards}</div>
-    ${A.benched.length?`<p class="help" style="margin-top:10px">Benched (spare): ${A.benched.map(p=>`<span onclick="csTap('${p.id}')" ${pill(p.id)}>${csEsc(p.name)}</span>`).join(', ')}</p>`:''}`;
+    ${A.benched.length?`<p class="help" style="margin-top:10px">Benched (spare): ${A.benched.map(p=>`<span onclick="csTap('${p.id}')" ${pill(p.id)}>${csEsc(p.name)}</span> ${tag(p)}`).join(', ')}</p>`:''}`;
 }
 
 window.csAskAlliance=()=>{
