@@ -218,7 +218,7 @@
   <div class="panel" id="attendancePanel" style="display:none"></div>
   <div class="panel">
     <h2>History grid</h2>
-    <p class="help">Rows = players, columns = event dates. <span class="badge b-start">STA</span> started · <span class="badge b-sub">SUB</span> substitute · <span class="badge b-ban">NS</span> picked but no-show · <span class="badge b-noon">APP</span> applied, not picked · <span class="badge b-eve">NA</span> voted not available · <span class="badge b-ban">BAN</span> applied while banned · <span class="badge b-wait">DNV</span> in roster, didn't vote · — not in roster yet.</p>
+    <p class="help">Rows = players, columns = event dates. <span class="badge b-start">STA</span> started · <span class="badge b-sub">SUB</span> substitute · <span class="badge b-ban">NS</span> picked but no-show · <span class="badge b-noon">APP</span> applied, not picked · <span class="badge b-eve">NA</span> voted not available · <span class="badge b-ban">BAN</span> applied while banned · <span class="badge b-wait">DNV</span> in roster, didn't vote · — not in roster yet. Click an <b>APP / NA / BAN / DNV</b> cell to correct it — it feeds straight into fairness tie-breaking on the New Event tab, same as the original record would have. STA/SUB/NS cells aren't editable here; open that event above to change starters, subs or attendance.</p>
     <div id="gridArea"></div>
   </div>
 </section>
@@ -1644,20 +1644,77 @@ function gridData(mode){
   const names=[...players].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:'base'}));
   return {evs,names};
 }
+// index-based lookup for grid click handlers, so player names (which can contain quotes,
+// emoji, homoglyphs — see the roster) never get embedded into an onclick HTML attribute.
+let gridNames={desert:[],canyon:[]};
+const GRID_EDITABLE=['DNV','APP','NA','BAN']; // STA/SUB/NS are edited from the event itself (History tab)
 function renderGrid(){
   const area=document.getElementById('gridArea'); if(!area) return;
   let html='';
   for(const mode of ['desert','canyon']){
     const {evs,names}=gridData(mode);
+    gridNames[mode]=names;
     if(!evs.length) continue;
     html+=`<h3 style="color:${mode==='desert'?'var(--accent)':'var(--accent2)'}">${mode==='desert'?'🏜️ Desert Storm':'🏞️ Canyon Storm'} <button class="mini" onclick="exportGrid('${mode}')">⬇ Export grid CSV</button></h3>
       <div style="overflow-x:auto"><table><tr><th>Player</th>${evs.map(e=>`<th>${e.date}</th>`).join('')}</tr>`+
-      names.map(n=>`<tr><td>${esc(n)}</td>${evs.map(ev=>{
+      names.map((n,i)=>`<tr><td>${esc(n)}</td>${evs.map(ev=>{
         const note=gridNote(ev,n);
-        return `<td${note?` title="${esc(note)}"`:''}>${gridBadge(gridValue(ev,n))}${note?' <span class="muted" title="'+esc(note)+'">🗒</span>':''}</td>`;
+        const v=gridValue(ev,n);
+        const clickable=GRID_EDITABLE.includes(v);
+        const tip=clickable?'click to change':(['STA','SUB','NS'].includes(v)?'edit starters/subs/attendance from this event on the History tab above':'');
+        const attrs=clickable?` style="cursor:pointer" onclick="gridEditCell('${mode}',${ev.id},${i})"`:'';
+        const t=[note,tip].filter(Boolean).join(' — ');
+        return `<td${t?` title="${esc(t)}"`:''}${attrs}>${gridBadge(v)}${note?' <span class="muted">🗒</span>':''}</td>`;
       }).join('')}</tr>`).join('')+'</table></div>';
   }
   area.innerHTML=html||'<p class="muted">No saved events yet — the grid builds itself as you run events.</p>';
+}
+window.gridEditCell=(mode,evId,i)=>{
+  const ev=db.events.find(e=>e.id===evId); if(!ev) return;
+  const name=(gridNames[mode]||[])[i]; if(!name) return;
+  const cur=gridValue(ev,name);
+  if(!GRID_EDITABLE.includes(cur)) return; // STA/SUB/NS/blank aren't editable here
+  const OPTS=[['DNV',"In roster, didn't vote"],['APP','Applied, not picked'],['NA','Voted, not available'],['BAN','Applied while banned']];
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box">
+    <h3>${esc(name)}</h3>
+    <p class="help">${esc(ev.date)} — ${modeChipHtml(ev.mode)}<br>Change this event's record. This only covers "didn't vote / applied /
+      not-available / banned" — starters, subs and attendance are edited by opening the event itself on the History tab.</p>
+    <div style="display:flex;flex-direction:column;gap:6px;margin:10px 0">
+      ${OPTS.map(([code,label])=>`<label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+        <input type="radio" name="gridStatus" value="${code}" ${cur===code?'checked':''}> ${gridBadge(code)} <span>${label}</span>
+      </label>`).join('')}
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button class="btn" id="gridEditSave">Save</button>
+      <button class="btn ghost" id="gridEditX">Cancel</button>
+    </div></div>`;
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{ if(e.target===wrap) close(); };
+  wrap.querySelector('#gridEditX').onclick=close;
+  wrap.querySelector('#gridEditSave').onclick=()=>{
+    const sel=wrap.querySelector('input[name="gridStatus"]:checked');
+    if(!sel){ close(); return; }
+    setGridStatus(ev,name,sel.value);
+    close();
+  };
+};
+function setGridStatus(ev,name,val){
+  const k=norm(name);
+  const before=gridValue(ev,name);
+  ev.waitlist=(ev.waitlist||[]).filter(n=>norm(n)!==k);
+  ev.notAvailable=(ev.notAvailable||[]).filter(n=>norm(n)!==k);
+  ev.banned=(ev.banned||[]).filter(n=>norm(n)!==k);
+  if(val==='APP') ev.waitlist.push(name);
+  else if(val==='NA') ev.notAvailable.push(name);
+  else if(val==='BAN') ev.banned.push(name);
+  // val==='DNV' -> leave out of all three; falls back to the roster snapshot
+  if(before===val){ save(); return; }
+  recomputeDerived(); // lastApplied, and the New Event picker's tie-break walk, both re-read
+                       // db.events live — no separate wiring needed for this to take effect
+  renderEvents();
+  toast(`${name} — ${ev.date}: ${before||'—'} → ${val}`);
 }
 window.exportGrid=mode=>{
   const {evs,names}=gridData(mode);
