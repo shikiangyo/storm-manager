@@ -203,7 +203,7 @@
       <span style="color:var(--muted)">▫</span> did not apply, ● played.
       A ban or no-show counts as played, so sitting one out earns no priority.
       The refusal count is shown for information only — it is not used to sort.</p>
-    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 3 weeks (21 days) from the event date. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically. If the same person ended up as two roster entries (typo, different spelling), use 🔗 to merge the duplicate into the real one — histories are combined and the duplicate name becomes an alias.</p>
+    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 3 weeks (21 days) from the event date. Click ✎ next to an active ban to extend or reduce it — pick a new date and save; the picker, this table and everywhere else a ban is checked all read the same updated date immediately. A manual edit is only overridden if that player no-shows again afterwards, so a fresh ban always wins. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically. If the same person ended up as two roster entries (typo, different spelling), use 🔗 to merge the duplicate into the real one — histories are combined and the duplicate name becomes an alias.</p>
     <div id="rosterTable"></div>
   </div>
 </section>
@@ -418,6 +418,8 @@ function migrate(d){
     p.lastApplied=p.lastApplied||{desert:null,canyon:null};
     p.lastStarted=p.lastStarted||{desert:null,canyon:null};
     p.banCleared=p.banCleared||{desert:null,canyon:null};
+    p.banAdjust=p.banAdjust||{desert:null,canyon:null};
+    p.banNatural=p.banNatural||{desert:null,canyon:null};
   }
   // ---- Canyon Storm module data (kept apart from the selection data) ----
   d.cs=d.cs||{};
@@ -483,6 +485,29 @@ function recomputeDerived(){
   for(const k of Object.keys(db.players)){
     const p=db.players[k]; p.banCleared=p.banCleared||{desert:null,canyon:null};
     for(const m of ['desert','canyon']) if(p.banUntil[m]&&p.banCleared[m]&&p.banCleared[m]>=p.banUntil[m]) p.banUntil[m]=null;
+  }
+  // Snapshot the "natural" ban-until — purely from the event log + the clear above, before any
+  // manual extend/reduce is layered on. This is what stays stable across repeated manual edits
+  // (no new events = same natural value each recompute), so it's the right thing to compare a
+  // manual edit's baseline against — comparing against the previously-*adjusted* banUntil instead
+  // would make every edit after the first look stale immediately.
+  for(const k of Object.keys(db.players)){
+    const p=db.players[k];
+    p.banNatural=p.banNatural||{desert:null,canyon:null};
+    p.banNatural.desert=p.banUntil.desert; p.banNatural.canyon=p.banUntil.canyon;
+  }
+  // apply any manual "extend / reduce" edit made on the Roster tab (window.saveBanAdjust).
+  // Each adjustment remembers the natural ban-until it was made against (its "baseline"); it
+  // keeps applying as long as the natural value above hasn't moved past that baseline. A fresh
+  // no-show recalculates the natural date and no longer matches, so the old adjustment is dropped
+  // automatically and the new no-show's ban stands — same self-expiring idea as banCleared.
+  for(const k of Object.keys(db.players)){
+    const p=db.players[k]; p.banAdjust=p.banAdjust||{desert:null,canyon:null};
+    for(const m of ['desert','canyon']){
+      const adj=p.banAdjust[m]; if(!adj) continue;
+      if(adj.baseline===(p.banNatural[m]||null)) p.banUntil[m]=adj.until;
+      else p.banAdjust[m]=null; // stale — a newer no-show has moved the natural date since
+    }
   }
   save();
 }
@@ -603,7 +628,7 @@ function resolveKey(name){
 function peekPlayer(name){ const k=resolveKey(name); return k?db.players[k]:null; } // read-only: never creates
 function getPlayer(name){
   let k=resolveKey(name);
-  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},lastApplied:{desert:null,canyon:null},lastStarted:{desert:null,canyon:null},banCleared:{desert:null,canyon:null},aliases:[],notes:''}; }
+  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},lastApplied:{desert:null,canyon:null},lastStarted:{desert:null,canyon:null},banCleared:{desert:null,canyon:null},banAdjust:{desert:null,canyon:null},aliases:[],notes:''}; }
   return db.players[k];
 }
 function renamePlayer(oldKey,newName){
@@ -1224,6 +1249,7 @@ document.getElementById('btnCopyTeams').onclick=()=>{
 
 /* ================= roster tab ================= */
 let rosterKeys=[]; // maps rendered row index -> db.players key
+let banEdit=null;  // {idx,mode} — which roster row/mode currently shows the ban-adjust date picker
 function renderRoster(){
   const today=new Date().toISOString().slice(0,10);
   const players=Object.values(db.players).sort((a,b)=>a.name.localeCompare(b.name));
@@ -1244,7 +1270,18 @@ function renderRoster(){
       <td class="muted">${fmtDate(p.lastSelected.desert)}</td>
       <td class="muted">${fmtDate(p.lastSelected.canyon)}</td>
       <td>${p.noShows?`<span style="color:var(--red)">${p.noShows}</span>`:'0'}</td>
-      <td>${['desert','canyon'].map(m=>isBanned(p,m,today)?`<div><span class="badge b-ban">${m==='desert'?'Desert':'Canyon'} until ${p.banUntil[m]}</span> <button class="mini" onclick="clearBan(${idx},'${m}')">clear</button></div>`:'').join('')||'—'}</td>
+      <td>${['desert','canyon'].map(m=>{
+        if(!isBanned(p,m,today)) return '';
+        const editing=!!(banEdit&&banEdit.idx===idx&&banEdit.mode===m);
+        let html=`<div><span class="badge b-ban">${m==='desert'?'Desert':'Canyon'} until ${p.banUntil[m]}</span> `+
+          `<button class="mini" title="Extend or reduce this ban" onclick="startBanEdit(${idx},'${m}')">${editing?'✕':'✎'}</button> `+
+          `<button class="mini" onclick="clearBan(${idx},'${m}')">clear</button>`;
+        if(editing) html+=`<div class="row" style="margin:4px 0 0">
+            <input type="date" id="banDateInput-${idx}-${m}" value="${p.banUntil[m]}">
+            <button class="mini" onclick="saveBanAdjust(${idx},'${m}',document.getElementById('banDateInput-${idx}-${m}').value)">Save</button>
+          </div>`;
+        return html+'</div>';
+      }).join('')||'—'}</td>
       <td><button class="mini" onclick="delPlayer(${idx})">🗑</button></td>
     </tr>`;
   }).join('');
@@ -1329,7 +1366,30 @@ window.clearBan=(i,mode)=>{
   p.banCleared=p.banCleared||{desert:null,canyon:null};
   p.banCleared[mode]=p.banUntil[mode]; // remember the clear so recomputes don't resurrect it
   p.banUntil[mode]=null;
+  p.banAdjust=p.banAdjust||{desert:null,canyon:null};
+  p.banAdjust[mode]=null; // drop any pending extend/reduce too, so it can't resurrect the ban on the next recompute
   save(); renderRoster(); toast(`${mode==='desert'?'Desert Storm':'Canyon Storm'} ban cleared`);
+};
+window.startBanEdit=(idx,mode)=>{
+  banEdit=(banEdit&&banEdit.idx===idx&&banEdit.mode===mode)?null:{idx,mode};
+  renderRoster();
+};
+window.saveBanAdjust=(idx,mode,val)=>{
+  const p=db.players[rosterKeys[idx]]; if(!p) return;
+  const until=String(val||'').trim();
+  if(!until){ toast('Pick a date, or use "clear" to remove the ban entirely','err'); return; }
+  p.banAdjust=p.banAdjust||{desert:null,canyon:null};
+  p.banNatural=p.banNatural||{desert:null,canyon:null};
+  // baseline = the *natural* (event-log-derived) ban-until this edit was made against — not the
+  // currently-displayed value, which may already include an earlier manual edit. Comparing against
+  // the natural value lets you re-edit an edit; if a fresh no-show later pushes the natural date
+  // past this baseline, recomputeDerived() drops the adjustment automatically instead of letting a
+  // stale manual edit hide a brand-new ban.
+  p.banAdjust[mode]={until, baseline:p.banNatural[mode]||null};
+  banEdit=null;
+  recomputeDerived(); // rewrites p.banUntil[mode] — the same field isBanned() and the New Event picker read
+  renderRoster();
+  toast(`${p.name}: ${mode==='desert'?'Desert':'Canyon'} ban now runs until ${until}`);
 };
 window.delPlayer=i=>{
   const k=rosterKeys[i]; if(!k||!db.players[k]) return;
@@ -1386,6 +1446,39 @@ window.delEvent=id=>{
   document.getElementById('attendancePanel').style.display='none';
   toast('Event deleted — history and bans recalculated');
 };
+let editRow=null; // {evId,slot,i} — which event-team row currently shows the edit-person controls
+window.toggleEditPerson=(id,slot,i)=>{
+  editRow=(editRow&&editRow.evId===id&&editRow.slot===slot&&editRow.i===i)?null:{evId:id,slot,i};
+  openEvent(id);
+};
+window.swapPerson=(id,slot,i)=>{
+  const ev=db.events.find(e=>e.id===id); if(!ev)return;
+  const sel=document.getElementById(`swapSel-${slot}-${i}`);
+  const j=sel?+sel.value:NaN;
+  if(!sel||sel.value===''||Number.isNaN(j)) return;
+  const arr=ev.teams[slot], a=arr[i], b=arr[j]; if(!a||!b) return;
+  arr[i]={...b, role:a.role};
+  arr[j]={...a, role:b.role};
+  editRow=null;
+  recomputeDerived(); // lastStarted/lastSelected/no-shows follow whoever now occupies each slot
+  renderEvents(); openEvent(id);
+  toast(`Swapped ${arr[i].name} ↔ ${arr[j].name}`);
+};
+window.changePerson=(id,slot,i)=>{
+  const ev=db.events.find(e=>e.id===id); if(!ev)return;
+  const sel=document.getElementById(`rosterSel-${slot}-${i}`);
+  const newName=sel&&sel.value; if(!newName) return;
+  const arr=ev.teams[slot], row=arr[i]; if(!row) return;
+  if(norm(newName)===norm(row.name)){ editRow=null; openEvent(id); return; }
+  const isDup=[...ev.teams.noon,...ev.teams.evening].some(m=>m!==row&&norm(m.name)===norm(newName));
+  if(isDup){ toast(`${newName} is already in this event`,'err'); return; }
+  const oldName=row.name;
+  arr[i]={name:newName, role:row.role, attended:null};
+  editRow=null;
+  recomputeDerived(); // this event's contribution to fairness/bans now follows the new name
+  renderEvents(); openEvent(id);
+  toast(`${oldName} → ${newName} — mark their attendance`);
+};
 window.openEvent=id=>{
   const ev=db.events.find(e=>e.id===id); if(!ev)return;
   const ro=!!ev.locked;
@@ -1406,8 +1499,37 @@ window.openEvent=id=>{
         ? (m.note?esc(m.note):'<span class="muted">—</span>')
         : `<input type="text" style="width:100%;min-width:150px" placeholder="reason / note…" value="${esc(m.note||'')}"
              onchange="setAttNote(${id},'${slot}',${i},this.value)">`;
-      return `<tr><td>${esc(m.name)}</td><td><span class="badge ${m.role==='starter'?'b-start':'b-sub'}">${m.role}</span></td>
-        <td>${att}</td><td>${ban}</td><td>${note}</td></tr>`;
+      const editing=!!(editRow&&editRow.evId===id&&editRow.slot===slot&&editRow.i===i);
+      const nameCell=ro
+        ? esc(m.name)
+        : `${esc(m.name)} <button class="mini" title="Edit this person" onclick="toggleEditPerson(${id},'${slot}',${i})">${editing?'✕':'✎'}</button>`;
+      let editTr='';
+      if(editing){
+        const others=ev.teams[slot].map((mm,j)=>j).filter(j=>j!==i);
+        const swapOpts=others.map(j=>`<option value="${j}">${esc(ev.teams[slot][j].name)} (${ev.teams[slot][j].role})</option>`).join('');
+        const rosterNames=Object.values(db.players).map(p=>p.name).sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:'base'}));
+        const rosterOpts=rosterNames.map(n=>`<option value="${esc(n)}"${norm(n)===norm(m.name)?' selected':''}>${esc(n)}</option>`).join('');
+        editTr=`<tr><td colspan="5" style="background:var(--panel2)">
+          <div class="flexh" style="align-items:flex-end">
+            <div>
+              <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:3px">Swap with someone else in this squad<br><span style="font-weight:400">(their name &amp; attendance move to this spot — a sub taking over a starter's place, or vice versa)</span></label>
+              <div class="row" style="margin:0">
+                <select id="swapSel-${slot}-${i}" ${others.length?'':'disabled'}>${swapOpts||'<option value="">— no one else in this squad —</option>'}</select>
+                <button class="mini" ${others.length?'':'disabled'} onclick="swapPerson(${id},'${slot}',${i})">⇄ Swap</button>
+              </div>
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:3px">Or change to someone from the main roster<br><span style="font-weight:400">(replaces this person; their attendance resets to pending)</span></label>
+              <div class="row" style="margin:0">
+                <select id="rosterSel-${slot}-${i}">${rosterOpts}</select>
+                <button class="mini" onclick="changePerson(${id},'${slot}',${i})">✓ Change</button>
+              </div>
+            </div>
+          </div>
+        </td></tr>`;
+      }
+      return `<tr><td>${nameCell}</td><td><span class="badge ${m.role==='starter'?'b-start':'b-sub'}">${m.role}</span></td>
+        <td>${att}</td><td>${ban}</td><td>${note}</td></tr>${editTr}`;
     }).join('');
     return `<div class="team-col" style="min-width:520px"><h3>${label}</h3><table><tr><th>Player</th><th>Role</th><th>Attendance</th><th>Ban</th><th>Note</th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
   };
