@@ -145,7 +145,8 @@
 
   <div class="panel">
     <h2>3 · Teams <span id="modeChip"></span></h2>
-    <p class="help">Selection order: <b>guaranteed players first</b>, then everyone else by <b>longest time since last selection</b> for this mode (never-selected players first; ties broken randomly). Players banned for a recent no-show <b>in this mode</b> are excluded (Desert and Canyon bans are separate). Availability only decides <i>which</i> team you join, never <i>whether</i> you get in — noon-only and both-slot applicants have equal odds. Edits are manual: ↓ drops to waitlist, ↑ promotes, ✕ removes from the event — nothing reshuffles on its own. To change someone's availability, remove them and re-add with the new slot.</p>
+    <p class="help">Selection order: <b>guaranteed players first</b>, then everyone else by <b>longest time since last selection</b> for this mode (never-selected players first; ties broken randomly). Players banned for a recent no-show <b>in this mode</b> are excluded (Desert and Canyon bans are separate). Availability only decides <i>which</i> team you join, never <i>whether</i> you get in — noon-only and both-slot applicants have equal odds. Edits are manual: ↓ drops to waitlist, ↑ promotes, ✕ removes from the event — nothing reshuffles on its own. To change someone's availability, remove them and re-add with the new slot.
+      <br><br><b>Desert Storm only:</b> who gets one of the 60 spots is decided exactly as above. Separately, whichever side (Noon/Evening) has the stronger single-preference voters — by <b>DS Ranking</b> grade first, power only breaking a tie within the same grade — gets first pick of the strongest "both" voters to fill it out, so that side ends up stronger rather than the two being balanced. Set DS Ranking on the <b>Storm Players</b> tab (admin only).</p>
     <div class="row">
       <button class="btn gold" id="btnAssign">⟳ Re-assign teams</button>
       <button class="btn ok" id="btnSaveEvent" style="display:none">✓ Confirm &amp; save event</button>
@@ -276,7 +277,11 @@
       and <b>Player type</b> (Roamer / Holder / Flex). This is separate from the main Roster tab, which decides
       <i>who plays</i>; this decides <i>where they stand</i>. Records are matched to the roster by name, so renaming or
       merging someone on the Roster tab carries their CS data across automatically.
-      <b>Power drives everything</b> — the snake draft and the sub pairing both use it, so anyone left at 0 will land badly.</p>
+      <b>Power drives everything</b> — the snake draft and the sub pairing both use it, so anyone left at 0 will land badly.
+      <b>DS Ranking</b> (admin only, A–E) is separate again — it's used only when choosing Desert Storm's Noon/Evening
+      split on the New Event tab, to work out which side is stronger and stack the strongest "both" voters onto it.
+      Grade always beats power (a B outranks a C regardless of power); power only breaks a tie within the same grade.
+      Leaving it unranked counts as the weakest grade for that calculation.</p>
     <div class="row">
       <button class="btn" id="csAdd">+ Add CS record</button>
       <label id="csImportLabel">Import CSV <input type="file" id="csImport" accept=".csv,.txt"></label>
@@ -424,7 +429,7 @@ function migrate(d){
   // ---- Canyon Storm module data (kept apart from the selection data) ----
   d.cs=d.cs||{};
   d.cs.roster=d.cs.roster||CS_SEED.map(p=>({...p}));
-  d.cs.roster.forEach(p=>{ if(!Array.isArray(p.aliases)) p.aliases=[]; });
+  d.cs.roster.forEach(p=>{ if(!Array.isArray(p.aliases)) p.aliases=[]; if(p.dsRank===undefined) p.dsRank=null; });
   d.cs.setups=d.cs.setups||{};
   d.cs.setups.rulebringers=d.cs.setups.rulebringers||JSON.parse(JSON.stringify(CS_DEFAULT_RB));
   d.cs.setups.dawnbreakers=d.cs.setups.dawnbreakers||JSON.parse(JSON.stringify(CS_DEFAULT_DB));
@@ -1066,24 +1071,77 @@ function runAssign(){
 
   const teams={noon:[],evening:[]}, waitlist=[];
   const other=s=>s==='noon'?'evening':'noon';
-  for(const x of order){
-    let t=null;
-    if(x.avail==='both'){
-      const nSpace=teamSize-teams.noon.length, eSpace=teamSize-teams.evening.length;
-      if(nSpace>0||eSpace>0) t = nSpace>=eSpace?'noon':'evening';
-    } else {
-      const want=x.avail;
-      if(teams[want].length<teamSize) t=want;
-      else if(teams[other(want)].length<teamSize){
-        // team is full, but a flexible ("both") member already seated there
-        // can be moved to the other team to make room — no penalty for
-        // single-slot availability.
-        const j=teams[want].findIndex(m=>m.avail==='both');
-        if(j>-1){ teams[other(want)].push(teams[want].splice(j,1)[0]); t=want; }
-      }
+  let dsStrength=null;
+  if(mode==='desert'){
+    /* Desert Storm: who gets one of the 60 spots is decided in exactly the same
+       fairness order as every other mode — that part is untouched. What's
+       different is which side a "both" voter lands on. Single-preference
+       voters claim their own side as they're processed (unchanged, and this
+       also means a "both" voter is never seated early only to block a
+       single-preference voter later — see architecture doc). Every "both"
+       voter who has a spot at all is instead collected with their side left
+       undecided, then once all single-preference voters are locked in, the
+       side that's stronger from single-preference voters alone (see
+       strongerSideOf) gets first pick of the strongest remaining "both"
+       voters to fill it out, weakest going to the other side. */
+    // Split into the three availability groups first, still in fairness order.
+    const singleNoonAll=[], singleEveningAll=[], bothAll=[];
+    for(const x of order){
+      if(x.avail==='both') bothAll.push(x);
+      else if(x.avail==='noon') singleNoonAll.push(x);
+      else singleEveningAll.push(x); // 'evening'
     }
-    if(t) teams[t].push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
-    else waitlist.push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
+    const out=x=>({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
+    // Each side's own single-preference voters are sized first, independent of
+    // "both" voters entirely — the old algorithm's bump-swap rule already meant
+    // a single-preference voter only ever lost their own side's slot to a
+    // *later-processed* single-preference voter of the same side, never to a
+    // "both" voter (a "both" voter in the way always got bumped to the other
+    // side instead, as long as it had room). So "first `teamSize` of this side's
+    // single-preference applicants, in fairness order" is exactly equivalent to
+    // that outcome, and — critically — it no longer depends on where "both"
+    // voters happen to fall in the fairness order (that's what a first version
+    // of this got wrong: gating "both" voters against a running, not-yet-final
+    // single-preference count let too many through and overflowed a side).
+    teams.noon=singleNoonAll.slice(0,teamSize).map(out);
+    teams.evening=singleEveningAll.slice(0,teamSize).map(out);
+    for(const x of singleNoonAll.slice(teamSize)) waitlist.push(out(x));
+    for(const x of singleEveningAll.slice(teamSize)) waitlist.push(out(x));
+    // Now the true remaining capacity is known, so exactly that many "both"
+    // voters (in fairness order) get a spot; the rest waitlist.
+    const remainingCap=teamSize*2-teams.noon.length-teams.evening.length;
+    const bothPicked=bothAll.slice(0,remainingCap);
+    for(const x of bothAll.slice(remainingCap)) waitlist.push(out(x));
+
+    const res=strongerSideOf(teams.noon,teams.evening);
+    const weakSide=other(res.side);
+    const bothSorted=[...bothPicked].sort((a,b)=>dsCmp(dsStrengthOf(a.p.name),dsStrengthOf(b.p.name)));
+    for(const x of bothSorted){
+      const t=teams[res.side].length<teamSize?res.side:weakSide;
+      teams[t].push(out(x));
+    }
+    dsStrength={strongSide:res.side,weakSide,reason:res.reason,
+      noon:teams.noon.map(m=>dsStrengthOf(m.name)),evening:teams.evening.map(m=>dsStrengthOf(m.name))};
+  } else {
+    for(const x of order){
+      let t=null;
+      if(x.avail==='both'){
+        const nSpace=teamSize-teams.noon.length, eSpace=teamSize-teams.evening.length;
+        if(nSpace>0||eSpace>0) t = nSpace>=eSpace?'noon':'evening';
+      } else {
+        const want=x.avail;
+        if(teams[want].length<teamSize) t=want;
+        else if(teams[other(want)].length<teamSize){
+          // team is full, but a flexible ("both") member already seated there
+          // can be moved to the other team to make room — no penalty for
+          // single-slot availability.
+          const j=teams[want].findIndex(m=>m.avail==='both');
+          if(j>-1){ teams[other(want)].push(teams[want].splice(j,1)[0]); t=want; }
+        }
+      }
+      if(t) teams[t].push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
+      else waitlist.push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
+    }
   }
   // starter order within each team: guaranteed first, then longest since last
   // START in this mode (never-started first); ties random via pre-shuffle
@@ -1092,7 +1150,7 @@ function runAssign(){
     teams[s]=shuffle(teams[s]).sort((a,b)=>(b.guaranteed-a.guaranteed)||(startRank(a)<startRank(b)?-1:startRank(a)>startRank(b)?1:0));
   const fair={};
   for(const x of pool) fair[x.p.name]={refused:x.f.refused, walk:x.f.walk};
-  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),fair,fairDates:F.dates};
+  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),fair,fairDates:F.dates,dsStrength};
   renderAssignment();
 }
 
@@ -1121,16 +1179,23 @@ function renderAssignment(){
     const p=peekPlayer(name);
     return p&&isBanned(p,A.mode,A.date)?`<span class="badge b-ban">BANNED until ${p.banUntil[A.mode]}</span> `:'';
   };
+  const fmtM=n=>n?(n/1e6).toFixed(0)+'m':'—';
+  const dsBadge=name=>{
+    if(A.mode!=='desert') return '';
+    const d=dsStrengthOf(name);
+    return `<span class="badge b-wait" title="DS Ranking${d.grade?'':' — unranked, counts as weakest'}">${d.grade||'—'} · ${fmtM(d.power)}</span> `;
+  };
   const teamHtml=(slot,label)=>{
     const list=A.teams[slot];
     const rows=list.map((m,i)=>`<tr>
       <td>${i+1}</td>
-      <td>${esc(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
+      <td>${esc(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)} ${dsBadge(m.name)}</td>
       <td>${history(m.name)}</td>
       <td><span class="badge ${i<A.starters?'b-start':'b-sub'}" style="cursor:pointer" onclick="toggleStarter('${slot}',${i})">${i<A.starters?'STARTER':'SUB'}</span></td>
       <td><button class="mini" onclick="dropMember('${slot}',${i})">↓ drop</button> <button class="mini" title="Remove from event entirely" onclick="removeMember('${slot}',${i})">✕</button></td>
     </tr>`).join('');
-    return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}</h3>
+    const strongTag=A.dsStrength&&A.dsStrength.strongSide===slot?' <span class="badge b-start">STRONGER SIDE</span>':(A.dsStrength&&A.dsStrength.weakSide===slot?' <span class="badge b-wait">weaker side</span>':'');
+    return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}${strongTag}</h3>
       <table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
   };
   // last 5 saved events for this mode, oldest -> newest, shown as grid-style history columns
@@ -1155,7 +1220,11 @@ function renderAssignment(){
   const bn=A.banned.map(b=>`<li>${esc(b.name)} — banned until ${b.until} &nbsp; ${history(b.name)}</li>`).join('');
   A.notAvailable.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
   const na=A.notAvailable.map((m,i)=>`<li>${esc(m.name)} &nbsp; ${history(m.name)} <button class="mini" title="Remove from event" onclick="removeNa(${i})">✕</button></li>`).join('');
+  const dsBanner=A.dsStrength?`<div class="banner view" style="margin-top:12px">⚔ <b>${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} is the stronger side</b> —
+    ${A.dsStrength.reason} The strongest "both" voters were used to fill it out; the rest went to ${A.dsStrength.weakSide==='noon'?'Noon':'Evening'}.
+    Drag-free re-shuffling: use ↓/✕ on a team member and the waitlist's → buttons below if you want to move anyone by hand.</div>`:'';
   document.getElementById('assignResult').innerHTML=`
+    ${dsBanner}
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
     ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th>${wlHistHead}<th></th></tr>${wl}</table>`:''}
     ${A.notAvailable.length?`<h3 style="color:var(--muted)">Voted — not available this week</h3><ul class="muted">${na}</ul>`:''}
@@ -2103,6 +2172,11 @@ renderNotes();
 
 const CS_T1   = ['Tank','Missile','Aircraft'];
 const CS_PTYPE= ['Roamer','Holder','Flex'];
+const CS_DSRANK=['A','B','C','D','E'];
+// Higher score = stronger. A player with no DS Ranking set (or no Storm Players
+// record at all) counts as the weakest tier — same convention csAttrs() already
+// uses for missing power/T1/player-type.
+const DS_GRADE_SCORE={A:5,B:4,C:3,D:2,E:1};
 
 // CS_DEFAULT_RB / CS_DEFAULT_DB are declared above, next to CS_SEED.
 const CS_ALLIANCE_LABEL={rulebringers:'Rulebringers',dawnbreakers:'Dawnbreakers'};
@@ -2171,7 +2245,50 @@ function csSuggest(name,pool,n){
 }
 function csAttrs(name){
   const p=csFind(name);
-  return p||{id:'missing:'+norm(name),name:name,power:0,t1:'Tank',ptype:'Holder',_missing:true};
+  return p||{id:'missing:'+norm(name),name:name,power:0,t1:'Tank',ptype:'Holder',dsRank:null,_missing:true};
+}
+
+/* =====================================================================
+   DESERT STORM — noon/evening team strength (DS Ranking + power)
+   ===================================================================== */
+// A player's strength for this purpose: their DS Ranking grade (A strongest,
+// unranked/no CS record = weakest), with power only breaking ties within the
+// same grade — "a B with 373m power ranks higher than a C with 430m power".
+function dsStrengthOf(name){
+  const p=csFind(name);
+  const grade=(p&&p.dsRank&&DS_GRADE_SCORE[p.dsRank])?p.dsRank:null;
+  return {name, grade, score:grade?DS_GRADE_SCORE[grade]:DS_GRADE_SCORE.E, power:(p&&p.power)||0};
+}
+// Strongest-first comparator: grade always wins; power only decides a tie within the same grade.
+const dsCmp=(a,b)=>(b.score-a.score)||(b.power-a.power);
+
+// Which side — noon or evening — is stronger, judged only by the people who
+// voted for exactly one side (not "both"). Ranks each side strongest-to-weakest
+// and compares position by position (best vs best, 2nd vs 2nd, ...); the first
+// difference decides it. Falls back to depth, then total power, then Noon, for
+// the rare case where every matched rank ties exactly.
+function strongerSideOf(noonSingles,eveningSingles){
+  const A=noonSingles.map(x=>dsStrengthOf(x.name)).sort(dsCmp);
+  const B=eveningSingles.map(x=>dsStrengthOf(x.name)).sort(dsCmp);
+  const n=Math.min(A.length,B.length);
+  for(let i=0;i<n;i++){
+    const c=dsCmp(A[i],B[i]);
+    if(c!==0){
+      const side=c<0?'noon':'evening';
+      return {side, reason:`Rank ${i+1}: ${esc(A[i].name)} (${A[i].grade||'unranked'}${A[i].power?', '+A[i].power.toLocaleString():''}) on Noon `+
+        `vs ${esc(B[i].name)} (${B[i].grade||'unranked'}${B[i].power?', '+B[i].power.toLocaleString():''}) on Evening — ${side==='noon'?'Noon':'Evening'} wins.`};
+    }
+  }
+  if(A.length!==B.length){
+    const side=A.length>B.length?'noon':'evening';
+    return {side, reason:`Every matched rank tied — Noon has ${A.length} single-preference voter(s) vs Evening's ${B.length}, so ${side==='noon'?'Noon':'Evening'} (more depth) is treated as stronger.`};
+  }
+  const sumA=A.reduce((s,x)=>s+x.power,0), sumB=B.reduce((s,x)=>s+x.power,0);
+  if(sumA!==sumB){
+    const side=sumA>sumB?'noon':'evening';
+    return {side, reason:`Every matched rank tied — total power decided it: Noon ${sumA.toLocaleString()} vs Evening ${sumB.toLocaleString()}.`};
+  }
+  return {side:'noon', reason:`Tied on grade, depth and total power — defaulted to Noon.`};
 }
 
 /* =====================================================================
@@ -2681,7 +2798,7 @@ function renderCsPlayers(){
     <div class="stat"><div class="n">${all.filter(p=>p.ptype==='Roamer').length}</div><div class="l">Roamers</div></div>
     <div class="stat"><div class="n">${all.filter(p=>!inRoster(p.name)).length}</div><div class="l">Not on main roster</div></div>`;
 
-  wrap.innerHTML=`<table><thead><tr><th>Name</th><th>Power</th><th>T1 type</th><th>Player type</th><th></th></tr></thead><tbody>${
+  wrap.innerHTML=`<table><thead><tr><th>Name</th><th>Power</th><th>T1 type</th><th>Player type</th><th class="admin-only">DS Ranking</th><th></th></tr></thead><tbody>${
     shown.map(p=>`<tr>
       <td><b>${csEsc(p.name)}</b>${inRoster(p.name)?'':' <span class="badge b-ban" title="No matching player on the Roster tab">not on roster</span>'}
         ${(p.aliases||[]).length?`<div class="muted" style="font-size:11px">also: ${p.aliases.map(a=>
@@ -2689,15 +2806,25 @@ function renderCsPlayers(){
       <td${p.power?'':' style="color:var(--red)"'}>${p.power?p.power.toLocaleString():'— not set'}</td>
       <td><span class="badge b-noon">${csEsc(p.t1)}</span></td>
       <td><span class="badge ${p.ptype==='Roamer'?'b-eve':'b-wait'}">${csEsc(p.ptype)}</span></td>
+      <td class="admin-only"><select onchange="setDsRank('${p.id}',this.value)">
+        <option value=""${p.dsRank?'':' selected'}>— unranked —</option>
+        ${CS_DSRANK.map(g=>`<option value="${g}"${p.dsRank===g?' selected':''}>${g}</option>`).join('')}
+      </select></td>
       <td style="text-align:right" class="admin-only">
         <button class="mini" onclick="csEdit('${p.id}')">✏️</button>
         <button class="mini" onclick="csDelete('${p.id}')">🗑</button></td>
-    </tr>`).join('')||'<tr><td colspan="5" class="muted">No CS records yet.</td></tr>'
+    </tr>`).join('')||'<tr><td colspan="6" class="muted">No CS records yet.</td></tr>'
   }</tbody></table>`;
 }
+window.setDsRank=(id,val)=>{
+  const p=db.cs.roster.find(x=>x.id===id); if(!p) return;
+  p.dsRank=val||null;
+  save(); renderCsPlayers();
+  toast(`${p.name}: DS Ranking ${p.dsRank||'cleared'}`);
+};
 
 window.csEdit=id=>{
-  const p=id?db.cs.roster.find(x=>x.id===id):{id:'',name:'',power:0,t1:'Tank',ptype:'Holder'};
+  const p=id?db.cs.roster.find(x=>x.id===id):{id:'',name:'',power:0,t1:'Tank',ptype:'Holder',dsRank:null};
   if(!p) return;
   csEditing={...p};
   const wrap=document.createElement('div'); wrap.className='modal';
@@ -2710,6 +2837,11 @@ window.csEdit=id=>{
     <select id="csfT1" style="width:100%;margin-bottom:10px">${CS_T1.map(t=>`<option${t===p.t1?' selected':''}>${t}</option>`).join('')}</select>
     <label class="muted" style="font-size:12px">Player type</label>
     <select id="csfType" style="width:100%;margin-bottom:10px">${CS_PTYPE.map(t=>`<option${t===p.ptype?' selected':''}>${t}</option>`).join('')}</select>
+    <label class="muted" style="font-size:12px">DS Ranking (Desert Storm team-strength only)</label>
+    <select id="csfDsRank" style="width:100%;margin-bottom:10px">
+      <option value=""${p.dsRank?'':' selected'}>— unranked —</option>
+      ${CS_DSRANK.map(g=>`<option value="${g}"${p.dsRank===g?' selected':''}>${g}</option>`).join('')}
+    </select>
     <div class="row" style="margin:12px 0 0"><button class="btn" id="csfSave">Save</button>
     <button class="btn ghost" id="csfX">Cancel</button></div></div>`;
   document.body.appendChild(wrap);
@@ -2721,6 +2853,7 @@ window.csEdit=id=>{
     if(!name){ toast('Name required','err'); return; }
     const rec={id:p.id||csUid(),name,power:+wrap.querySelector('#csfPower').value||0,
                t1:wrap.querySelector('#csfT1').value, ptype:wrap.querySelector('#csfType').value,
+               dsRank:wrap.querySelector('#csfDsRank').value||null,
                aliases:p.aliases||[]};
     if(p.id) db.cs.roster=db.cs.roster.map(x=>x.id===p.id?rec:x);
     else db.cs.roster.push(rec);
