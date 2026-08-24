@@ -202,7 +202,10 @@
       <span style="color:var(--muted);opacity:.6">–</span> not on the roster,
       <span style="color:var(--green)">▪</span> applied but not picked,
       <span style="color:var(--muted)">▫</span> did not apply, ● played.
-      A ban or no-show counts as played, so sitting one out earns no priority.
+      The no-show week itself still counts as played (they occupied a slot that
+      week). Later weeks spent excluded because that ban is still active count as
+      applied but not picked instead — a ban doesn't earn extra priority, but it
+      isn't held against you as if you'd actually played those weeks either.
       The refusal count is shown for information only — it is not used to sort.</p>
     <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 3 weeks (21 days) from the event date. Click ✎ next to an active ban to extend or reduce it — pick a new date and save; the picker, this table and everywhere else a ban is checked all read the same updated date immediately. A manual edit is only overridden if that player no-shows again afterwards, so a fresh ban always wins. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically. If the same person ended up as two roster entries (typo, different spelling), use 🔗 to merge the duplicate into the real one — histories are combined and the duplicate name becomes an alias.</p>
     <div id="rosterTable"></div>
@@ -989,14 +992,23 @@ document.getElementById('btnAssign').onclick=()=>{
    what each player was doing at every past event:
 
      -    not on the roster yet, so never had the chance   (ranks first)
-     APL  applied and was not picked                       (ranks second)
+     APL  applied and was not picked, or applied while
+          still serving out an earlier ban                (ranks second)
      DNV  on the roster but did not apply                  (ranks third)
-     P    played, or sat out a ban or no-show              (ranks last)
+     P    actually played, including the no-show week
+          itself that triggered a ban                      (ranks last)
 
-   A ban or no-show counts as P deliberately: sitting one out must not earn
-   queue priority. The "-" state comes from the roster snapshot saved with
-   each event; where an old event has no snapshot we cannot tell "-" from
-   DNV, so it falls back to DNV.
+   A no-show week counts as P — they occupied a slot that week, full stop.
+   The *later* weeks spent excluded because that ban is still active count
+   as APL instead: they weren't punished as if they'd played, but a ban
+   doesn't earn extra queue priority either — it's a neutral "tried, not
+   eligible", the same as any other applied-but-not-picked week. (Until
+   2026-08-24 those later weeks were also coded P, specifically so a ban
+   could never earn priority; Pete asked for that changed after noticing it
+   was dragging fairness ranking down as if the ban weeks had been played.)
+   The "-" state comes from the roster snapshot saved with each event;
+   where an old event has no snapshot we cannot tell "-" from DNV, so it
+   falls back to DNV.
    --------------------------------------------------------------------- */
 const FAIR_RANK={'-':0, APL:1, DNV:2, P:3};
 
@@ -1015,7 +1027,15 @@ function buildFairness(mode, beforeDate){
     for(const slot of ['noon','evening'])
       for(const m of ((e.teams&&e.teams[slot])||[])) put(m,e.date,'P');
     for(const m of (e.waitlist||[])) put(m,e.date,'APL');
-    for(const b of (e.banned||[]))   put(b,e.date,'P');   // a ban earns nothing
+    // Excluded this week because a ban from an earlier no-show is still active.
+    // Coded the same as "applied but not picked" — they did try to get in, they
+    // just weren't eligible — NOT the same as actually playing. (The no-show week
+    // itself is still 'P', from the teams[] loop above — that part is unchanged;
+    // this only covers the later weeks spent serving out the ban.) Previously this
+    // was coded 'P' deliberately, to stop a ban from ever earning queue priority;
+    // Pete asked for that to change after noticing the History grid's BAN weeks
+    // were dragging his fairness ranking down as if he'd actually played them.
+    for(const b of (e.banned||[]))   put(b,e.date,'APL');
     // roster snapshot, so we can tell "wasn't here yet" from "didn't apply"
     if(Array.isArray(e.roster) && e.roster.length){
       const s={};
