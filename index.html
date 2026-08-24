@@ -1072,76 +1072,60 @@ function runAssign(){
   const teams={noon:[],evening:[]}, waitlist=[];
   const other=s=>s==='noon'?'evening':'noon';
   let dsStrength=null;
-  if(mode==='desert'){
-    /* Desert Storm: who gets one of the 60 spots is decided in exactly the same
-       fairness order as every other mode — that part is untouched. What's
-       different is which side a "both" voter lands on. Single-preference
-       voters claim their own side as they're processed (unchanged, and this
-       also means a "both" voter is never seated early only to block a
-       single-preference voter later — see architecture doc). Every "both"
-       voter who has a spot at all is instead collected with their side left
-       undecided, then once all single-preference voters are locked in, the
-       side that's stronger from single-preference voters alone (see
-       strongerSideOf) gets first pick of the strongest remaining "both"
-       voters to fill it out, weakest going to the other side. */
-    // Split into the three availability groups first, still in fairness order.
-    const singleNoonAll=[], singleEveningAll=[], bothAll=[];
-    for(const x of order){
-      if(x.avail==='both') bothAll.push(x);
-      else if(x.avail==='noon') singleNoonAll.push(x);
-      else singleEveningAll.push(x); // 'evening'
+  // Pure fairness-order inclusion pass, shared by every mode: decides who gets
+  // one of the 2*teamSize spots, and locks in a side for every single-preference
+  // voter. A "both" voter takes whichever side has more relative space right now
+  // (tie -> noon); if a single-preference voter's side is already full, a "both"
+  // member already seated there gets bumped to the other side (if it has room)
+  // to make way — a single-preference applicant is never blocked by a "both"
+  // applicant that's still flexible. This is the one algorithm every mode has
+  // always used for *whether* someone gets in; Desert Storm's second pass below
+  // only ever changes *which side* an already-included "both" voter plays on —
+  // it never touches inclusion or team size.
+  for(const x of order){
+    let t=null;
+    if(x.avail==='both'){
+      const nSpace=teamSize-teams.noon.length, eSpace=teamSize-teams.evening.length;
+      if(nSpace>0||eSpace>0) t = nSpace>=eSpace?'noon':'evening';
+    } else {
+      const want=x.avail;
+      if(teams[want].length<teamSize) t=want;
+      else if(teams[other(want)].length<teamSize){
+        // team is full, but a flexible ("both") member already seated there
+        // can be moved to the other team to make room — no penalty for
+        // single-slot availability.
+        const j=teams[want].findIndex(m=>m.avail==='both');
+        if(j>-1){ teams[other(want)].push(teams[want].splice(j,1)[0]); t=want; }
+      }
     }
-    const out=x=>({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
-    // Each side's own single-preference voters are sized first, independent of
-    // "both" voters entirely — the old algorithm's bump-swap rule already meant
-    // a single-preference voter only ever lost their own side's slot to a
-    // *later-processed* single-preference voter of the same side, never to a
-    // "both" voter (a "both" voter in the way always got bumped to the other
-    // side instead, as long as it had room). So "first `teamSize` of this side's
-    // single-preference applicants, in fairness order" is exactly equivalent to
-    // that outcome, and — critically — it no longer depends on where "both"
-    // voters happen to fall in the fairness order (that's what a first version
-    // of this got wrong: gating "both" voters against a running, not-yet-final
-    // single-preference count let too many through and overflowed a side).
-    teams.noon=singleNoonAll.slice(0,teamSize).map(out);
-    teams.evening=singleEveningAll.slice(0,teamSize).map(out);
-    for(const x of singleNoonAll.slice(teamSize)) waitlist.push(out(x));
-    for(const x of singleEveningAll.slice(teamSize)) waitlist.push(out(x));
-    // Now the true remaining capacity is known, so exactly that many "both"
-    // voters (in fairness order) get a spot; the rest waitlist.
-    const remainingCap=teamSize*2-teams.noon.length-teams.evening.length;
-    const bothPicked=bothAll.slice(0,remainingCap);
-    for(const x of bothAll.slice(remainingCap)) waitlist.push(out(x));
-
+    if(t) teams[t].push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
+    else waitlist.push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
+  }
+  if(mode==='desert'){
+    /* Desert Storm only, second pass. Inclusion and team size are already
+       final and identical to every other mode (above) — nothing below adds
+       to or removes anyone from the waitlist, and nothing below changes how
+       many people end up on either team. All this does is decide *which*
+       side each already-included "both" voter plays on: pull every seated
+       "both" voter back out of both teams (their seat is guaranteed — this
+       only empties slots to refill, never waitlists anyone), work out which
+       side is stronger from the single-preference voters left in place, then
+       refill those emptied slots strongest-first, stronger side first,
+       reinforcing the gap rather than balancing it. */
+    const bothPicked=[];
+    for(const s of ['noon','evening']) teams[s]=teams[s].filter(m=>{
+      if(m.avail==='both'){ bothPicked.push(m); return false; }
+      return true;
+    });
     const res=strongerSideOf(teams.noon,teams.evening);
     const weakSide=other(res.side);
-    const bothSorted=[...bothPicked].sort((a,b)=>dsCmp(dsStrengthOf(a.p.name),dsStrengthOf(b.p.name)));
+    const bothSorted=[...bothPicked].sort((a,b)=>dsCmp(dsStrengthOf(a.name),dsStrengthOf(b.name)));
     for(const x of bothSorted){
       const t=teams[res.side].length<teamSize?res.side:weakSide;
-      teams[t].push(out(x));
+      teams[t].push(x);
     }
     dsStrength={strongSide:res.side,weakSide,reason:res.reason,rows:res.rows,
       noon:teams.noon.map(m=>dsStrengthOf(m.name)),evening:teams.evening.map(m=>dsStrengthOf(m.name))};
-  } else {
-    for(const x of order){
-      let t=null;
-      if(x.avail==='both'){
-        const nSpace=teamSize-teams.noon.length, eSpace=teamSize-teams.evening.length;
-        if(nSpace>0||eSpace>0) t = nSpace>=eSpace?'noon':'evening';
-      } else {
-        const want=x.avail;
-        if(teams[want].length<teamSize) t=want;
-        else if(teams[other(want)].length<teamSize){
-          // team is full, but a flexible ("both") member already seated there
-          // can be moved to the other team to make room — no penalty for
-          // single-slot availability.
-          const j=teams[want].findIndex(m=>m.avail==='both');
-          if(j>-1){ teams[other(want)].push(teams[want].splice(j,1)[0]); t=want; }
-        }
-      }
-      if(t) teams[t].push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
-      else waitlist.push({name:x.p.name,avail:x.avail,guaranteed:x.p.guaranteed});
-    }
   }
   // starter order within each team: guaranteed first, then longest since last
   // START in this mode (never-started first); ties random via pre-shuffle
