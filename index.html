@@ -146,7 +146,7 @@
   <div class="panel">
     <h2>3 · Teams <span id="modeChip"></span></h2>
     <p class="help">Selection order: <b>guaranteed players first</b>, then everyone else by <b>longest time since last selection</b> for this mode (never-selected players first; ties broken randomly). Players banned for a recent no-show <b>in this mode</b> are excluded (Desert and Canyon bans are separate). Availability only decides <i>which</i> team you join, never <i>whether</i> you get in — noon-only and both-slot applicants have equal odds. Edits are manual: ↓ drops to waitlist, ↑ promotes, ✕ removes from the event — nothing reshuffles on its own. To change someone's availability, remove them and re-add with the new slot.
-      <br><br><b>Desert Storm only:</b> who gets one of the 60 spots is decided exactly as above. Separately, whichever side (Noon/Evening) has the stronger single-preference voters — by <b>DS Ranking</b> grade first, power only breaking a tie within the same grade — gets first pick of the strongest "both" voters to fill it out, so that side ends up stronger rather than the two being balanced. Set DS Ranking on the <b>Storm Players</b> tab (admin only).</p>
+      <br><br><b>Desert Storm only:</b> who gets one of the 60 spots is decided exactly as above. Separately, the stronger side is worked out from single-preference voters only: each side is ranked strongest-to-weakest by <b>DS Ranking</b> grade (power breaking a tie within the same grade), then compared head-to-head at every matched rank — 1st vs 1st, 2nd vs 2nd, and so on (an unmatched extra rank on the longer list, with nobody to compare it against, doesn't count for either side). Every won matchup scores a base 1 point. A matchup between two different grades stays at that flat 1 point, power irrelevant. A matchup between the same grade is decided by power and gets a small bonus on top of the base point — 0.1 extra per 10m of power margin, so a close 10m win scores 1.1 and a 100m blowout scores 2 — enough for a clear power gap to matter without letting one power-decided win swamp several flat grade wins. Whichever side's total score is higher gets first pick of the strongest "both" voters to fill it out, so that side ends up stronger rather than the two being balanced. Set DS Ranking on the <b>Storm Players</b> tab (admin only).</p>
     <div class="row">
       <button class="btn gold" id="btnAssign">⟳ Re-assign teams</button>
       <button class="btn ok" id="btnSaveEvent" style="display:none">✓ Confirm &amp; save event</button>
@@ -1120,7 +1120,7 @@ function runAssign(){
       const t=teams[res.side].length<teamSize?res.side:weakSide;
       teams[t].push(out(x));
     }
-    dsStrength={strongSide:res.side,weakSide,reason:res.reason,
+    dsStrength={strongSide:res.side,weakSide,reason:res.reason,rows:res.rows,
       noon:teams.noon.map(m=>dsStrengthOf(m.name)),evening:teams.evening.map(m=>dsStrengthOf(m.name))};
   } else {
     for(const x of order){
@@ -1220,9 +1220,19 @@ function renderAssignment(){
   const bn=A.banned.map(b=>`<li>${esc(b.name)} — banned until ${b.until} &nbsp; ${history(b.name)}</li>`).join('');
   A.notAvailable.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
   const na=A.notAvailable.map((m,i)=>`<li>${esc(m.name)} &nbsp; ${history(m.name)} <button class="mini" title="Remove from event" onclick="removeNa(${i})">✕</button></li>`).join('');
-  const dsBanner=A.dsStrength?`<div class="banner view" style="margin-top:12px">⚔ <b>${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} is the stronger side</b> —
+  const dsRowsHtml=(A.dsStrength&&A.dsStrength.rows&&A.dsStrength.rows.length)?A.dsStrength.rows.map(r=>{
+    const cell=x=>x?`${esc(x.name)} <span class="muted">(${x.grade||'unranked'} · ${fmtM(x.power)})</span>`:'<span class="muted">—</span>';
+    const w=r.winner==='tie'?'Tie':(r.winner==='noon'?'Noon':'Evening');
+    const pts=r.kind==='tie'?'—':(r.kind==='grade'?`+1 (grade)`:`+${r.points.toFixed(2).replace(/0$/,'').replace(/\.$/,'')} (1 + ${r.margin.toFixed(1)}m margin)`);
+    return `<tr><td>${r.rank}</td><td>${cell(r.a)}</td><td>${cell(r.b)}</td><td>${w}</td><td>${pts}</td></tr>`;
+  }).join(''):'';
+  const dsBreakdown=dsRowsHtml?`<details style="margin-top:6px"><summary style="cursor:pointer">Show full rank-by-rank breakdown</summary>
+    <table style="margin-top:6px"><tr><th>Rank</th><th>☀️ Noon</th><th>🌙 Evening</th><th>Winner</th><th>Points</th></tr>${dsRowsHtml}</table></details>`:'';
+  const dsBanner=A.dsStrength?`<div class="banner view" style="margin-top:12px;flex-direction:column;align-items:stretch">
+    <div>⚔ <b>${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} is the stronger side</b> —
     ${A.dsStrength.reason} The strongest "both" voters were used to fill it out; the rest went to ${A.dsStrength.weakSide==='noon'?'Noon':'Evening'}.
-    Drag-free re-shuffling: use ↓/✕ on a team member and the waitlist's → buttons below if you want to move anyone by hand.</div>`:'';
+    Drag-free re-shuffling: use ↓/✕ on a team member and the waitlist's → buttons below if you want to move anyone by hand.</div>
+    ${dsBreakdown}</div>`:'';
   document.getElementById('assignResult').innerHTML=`
     ${dsBanner}
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
@@ -2263,32 +2273,55 @@ function dsStrengthOf(name){
 const dsCmp=(a,b)=>(b.score-a.score)||(b.power-a.power);
 
 // Which side — noon or evening — is stronger, judged only by the people who
-// voted for exactly one side (not "both"). Ranks each side strongest-to-weakest
-// and compares position by position (best vs best, 2nd vs 2nd, ...); the first
-// difference decides it. Falls back to depth, then total power, then Noon, for
-// the rare case where every matched rank ties exactly.
+// voted for exactly one side (not "both"). Ranks each side strongest-to-weakest,
+// then heads-up compares every MATCHED rank (1st vs 1st, 2nd vs 2nd, 3rd vs 3rd, ...)
+// — an unmatched extra rank on the longer list (no opponent to compare against)
+// doesn't count for either side at all. Every won matchup is worth a base 1 point
+// — a win is a win, grade-decided or power-decided. A grade-tied matchup (decided
+// by power) gets a small bonus on top, scaled by the power margin — 0.1 extra
+// points per 10m of margin, so a 10m power win scores 1.1 and a 100m power win
+// scores 2 — just enough that a clear power gap nudges the total, without letting
+// one close-fought power win swamp several flat grade wins the way raw power ever
+// could. Whichever side's total score is higher is the stronger side. Falls back
+// to total power, then Noon, for the rare case the score ties exactly.
 function strongerSideOf(noonSingles,eveningSingles){
   const A=noonSingles.map(x=>dsStrengthOf(x.name)).sort(dsCmp);
   const B=eveningSingles.map(x=>dsStrengthOf(x.name)).sort(dsCmp);
-  const n=Math.min(A.length,B.length);
+  const n=Math.min(A.length,B.length); // unmatched extras on the longer list don't count
+  let noonScore=0, eveningScore=0, noonWins=0, eveningWins=0, ties=0;
+  const rows=[];
   for(let i=0;i<n;i++){
-    const c=dsCmp(A[i],B[i]);
-    if(c!==0){
-      const side=c<0?'noon':'evening';
-      return {side, reason:`Rank ${i+1}: ${esc(A[i].name)} (${A[i].grade||'unranked'}${A[i].power?', '+A[i].power.toLocaleString():''}) on Noon `+
-        `vs ${esc(B[i].name)} (${B[i].grade||'unranked'}${B[i].power?', '+B[i].power.toLocaleString():''}) on Evening — ${side==='noon'?'Noon':'Evening'} wins.`};
+    const a=A[i], b=B[i];
+    let winner, points=0, kind, margin=0;
+    if(a.score===b.score){ // grade-tied — power decides, base win + a small margin bonus
+      margin=Math.abs(a.power-b.power)/1e6; // millions, exact
+      if(a.power===b.power){ winner='tie'; kind='tie'; }
+      else { winner=a.power>b.power?'noon':'evening'; points=1+margin/100; kind='power'; }
+    } else { // grade decides — flat 1 point, power irrelevant
+      winner=a.score>b.score?'noon':'evening'; points=1; kind='grade';
+    }
+    if(winner==='noon'){ noonScore+=points; noonWins++; }
+    else if(winner==='evening'){ eveningScore+=points; eveningWins++; }
+    else ties++;
+    rows.push({rank:i+1,a,b,winner,points,kind,margin});
+  }
+  let side, extra='';
+  if(noonScore!==eveningScore){
+    side=noonScore>eveningScore?'noon':'evening';
+  } else {
+    const sumA=A.reduce((s,x)=>s+x.power,0), sumB=B.reduce((s,x)=>s+x.power,0);
+    if(sumA!==sumB){
+      side=sumA>sumB?'noon':'evening';
+      extra=` Scores were tied, so total power broke it: Noon ${sumA.toLocaleString()} vs Evening ${sumB.toLocaleString()}.`;
+    } else {
+      side='noon';
+      extra=` Scores and total power were both tied — defaulted to Noon.`;
     }
   }
-  if(A.length!==B.length){
-    const side=A.length>B.length?'noon':'evening';
-    return {side, reason:`Every matched rank tied — Noon has ${A.length} single-preference voter(s) vs Evening's ${B.length}, so ${side==='noon'?'Noon':'Evening'} (more depth) is treated as stronger.`};
-  }
-  const sumA=A.reduce((s,x)=>s+x.power,0), sumB=B.reduce((s,x)=>s+x.power,0);
-  if(sumA!==sumB){
-    const side=sumA>sumB?'noon':'evening';
-    return {side, reason:`Every matched rank tied — total power decided it: Noon ${sumA.toLocaleString()} vs Evening ${sumB.toLocaleString()}.`};
-  }
-  return {side:'noon', reason:`Tied on grade, depth and total power — defaulted to Noon.`};
+  const fmtPts=v=>Number.isInteger(v)?v.toString():v.toFixed(2).replace(/0$/,'').replace(/\.$/,'');
+  const tiesText=ties?`, ${ties} matchup${ties===1?'':'s'} tied`:'';
+  const reason=`Head-to-head by rank (best vs best, 2nd vs 2nd, ...) — every win is worth 1 point, plus a small bonus (0.1 per 10m) when the win came down to power within the same grade: Noon scored ${fmtPts(noonScore)} pt${noonScore===1?'':'s'} across ${noonWins} won matchup${noonWins===1?'':'s'}, Evening scored ${fmtPts(eveningScore)} pt${eveningScore===1?'':'s'} across ${eveningWins} won matchup${eveningWins===1?'':'s'}${tiesText}.${extra} ${side==='noon'?'Noon':'Evening'} is the stronger side.`;
+  return {side, reason, rows, noonScore, eveningScore, noonWins, eveningWins};
 }
 
 /* =====================================================================
