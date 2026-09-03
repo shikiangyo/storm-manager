@@ -1557,6 +1557,18 @@ window.changePerson=(id,slot,i)=>{
   if(isDup){ toast(`${newName} is already in this event`,'err'); return; }
   const oldName=row.name;
   arr[i]={name:newName, role:row.role, attended:null};
+  // newName may already appear in this event's waitlist/notAvailable/banned (the
+  // common case: promoting someone straight off this same event's waitlist, exactly
+  // as the New Event tab itself suggests). Leaving that stale entry behind used to
+  // corrupt future fairness: buildFairness() codes waitlist names 'APL' for this
+  // date AFTER it codes team names 'P', so the leftover waitlist entry silently
+  // overwrote the correct "played" record with "applied, not picked" — quietly
+  // handing them undeserved queue priority in every later week until someone
+  // noticed they kept getting picked again right after being manually subbed in.
+  const nn=norm(newName);
+  ev.waitlist=(ev.waitlist||[]).filter(n=>norm(n)!==nn);
+  ev.notAvailable=(ev.notAvailable||[]).filter(n=>norm(typeof n==='object'?n.name:n)!==nn);
+  ev.banned=(ev.banned||[]).filter(b=>norm(typeof b==='object'?b.name:b)!==nn);
   editRow=null;
   recomputeDerived(); // this event's contribution to fairness/bans now follows the new name
   renderEvents(); openEvent(id);
