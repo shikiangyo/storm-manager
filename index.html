@@ -503,6 +503,19 @@ function recomputeDerived(){
       const p=db.players[key];
       if(!p.lastApplied[mode]||p.lastApplied[mode]<ev.date) p.lastApplied[mode]=ev.date;
     }
+    // A week spent excluded by a ban counts the same as a week actually played for
+    // "how overdue is this person" purposes — same as the walk-back tie-break below.
+    // Without this, sitting out a ban makes lastSelected[mode] go stale, so the
+    // player looks more and more overdue the longer they're banned and can jump
+    // straight to the front of the queue the moment it lifts — the opposite of a
+    // punishment. (Pete confirmed on 2026-09-06 he wants a ban to cost exactly what
+    // an actual turn would, whether or not the ban happened to land on a week they'd
+    // have been picked anyway.)
+    for(const n of (ev.banned||[])){
+      const key=resolveKey(n); if(!key) continue;
+      const p=db.players[key];
+      if(!p.lastSelected[mode]||p.lastSelected[mode]<ev.date) p.lastSelected[mode]=ev.date;
+    }
   }
   // respect bans an officer manually cleared
   for(const k of Object.keys(db.players)){
@@ -1007,20 +1020,21 @@ document.getElementById('btnAssign').onclick=()=>{
    what each player was doing at every past event:
 
      -    not on the roster yet, so never had the chance   (ranks first)
-     APL  applied and was not picked, or applied while
-          still serving out an earlier ban                (ranks second)
+     APL  applied and was not picked                       (ranks second)
      DNV  on the roster but did not apply                  (ranks third)
-     P    actually played, including the no-show week
-          itself that triggered a ban                      (ranks last)
+     P    actually played, or excluded that week by a ban  (ranks last)
 
    A no-show week counts as P — they occupied a slot that week, full stop.
-   The *later* weeks spent excluded because that ban is still active count
-   as APL instead: they weren't punished as if they'd played, but a ban
-   doesn't earn extra queue priority either — it's a neutral "tried, not
-   eligible", the same as any other applied-but-not-picked week. (Until
-   2026-08-24 those later weeks were also coded P, specifically so a ban
-   could never earn priority; Pete asked for that changed after noticing it
-   was dragging fairness ranking down as if the ban weeks had been played.)
+   The *later* weeks spent excluded because that ban is still active also
+   count as P: a ban is meant to cost exactly what an actual turn would, in
+   both this tie-break and lastSelected[mode] (see recomputeDerived) — not
+   the neutral "tried, not eligible" treatment an ordinary miss gets. (This
+   was briefly coded APL between 2026-08-24 and 2026-09-06, on the theory
+   that a ban shouldn't drag fairness ranking down as if it had been played;
+   Pete reverted that on 2026-09-06 after realizing it meant a ban landing
+   on a week someone wouldn't have been picked anyway cost them nothing at
+   all — no punishment, and lastSelected[mode] going stale during the ban
+   would even jump them to the front of the queue the moment it lifted.)
    The "-" state comes from the roster snapshot saved with each event;
    where an old event has no snapshot we cannot tell "-" from DNV, so it
    falls back to DNV.
@@ -1042,15 +1056,13 @@ function buildFairness(mode, beforeDate){
     for(const slot of ['noon','evening'])
       for(const m of ((e.teams&&e.teams[slot])||[])) put(m,e.date,'P');
     for(const m of (e.waitlist||[])) put(m,e.date,'APL');
-    // Excluded this week because a ban from an earlier no-show is still active.
-    // Coded the same as "applied but not picked" — they did try to get in, they
-    // just weren't eligible — NOT the same as actually playing. (The no-show week
-    // itself is still 'P', from the teams[] loop above — that part is unchanged;
-    // this only covers the later weeks spent serving out the ban.) Previously this
-    // was coded 'P' deliberately, to stop a ban from ever earning queue priority;
-    // Pete asked for that to change after noticing the History grid's BAN weeks
-    // were dragging his fairness ranking down as if he'd actually played them.
-    for(const b of (e.banned||[]))   put(b,e.date,'APL');
+    // Excluded this week because a ban from an earlier no-show (or a manual ban)
+    // is still active. Coded 'P' — same as actually playing — so a ban costs a
+    // real turn in the queue rather than a neutral "tried, not eligible" miss.
+    // (The no-show week itself is already 'P' from the teams[] loop above; this
+    // covers every later week spent serving out the ban.) See the comment block
+    // above this function for why this was briefly 'APL' and got reverted.
+    for(const b of (e.banned||[]))   put(b,e.date,'P');
     // roster snapshot, so we can tell "wasn't here yet" from "didn't apply"
     if(Array.isArray(e.roster) && e.roster.length){
       const s={};
