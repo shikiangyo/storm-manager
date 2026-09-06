@@ -220,7 +220,7 @@
       applied but not picked instead — a ban doesn't earn extra priority, but it
       isn't held against you as if you'd actually played those weeks either.
       The refusal count is shown for information only — it is not used to sort.</p>
-    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 3 weeks (21 days) from the event date. Click ✎ next to an active ban to extend or reduce it — pick a new date and save; the picker, this table and everywhere else a ban is checked all read the same updated date immediately. A manual edit is only overridden if that player no-shows again afterwards, so a fresh ban always wins. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically. If the same person ended up as two roster entries (typo, different spelling), use 🔗 to merge the duplicate into the real one — histories are combined and the duplicate name becomes an alias.</p>
+    <p class="help">Guaranteed players always get a spot when they apply (unless banned for a no-show). Bans are automatic and per mode: a no-show blocks selection in that game mode only (Desert or Canyon) for 3 weeks (21 days) from the event date. Click ✎ next to an active ban to extend or reduce it — pick a new date and save; the picker, this table and everywhere else a ban is checked all read the same updated date immediately. A manual edit is only overridden if that player no-shows again afterwards, so a fresh ban always wins. Use <b>🚫 Ban…</b> to ban someone manually for any other reason (a rules breach, an officer decision) — pick the mode and an until-date; it behaves exactly like an automatic no-show ban everywhere selection and fairness are concerned, it just doesn't add a no-show to their count. If a player changes their in-game name, use ✏️ to rename them — all history, bans and fairness priority stay attached, and applications under the old name still match automatically. If the same person ended up as two roster entries (typo, different spelling), use 🔗 to merge the duplicate into the real one — histories are combined and the duplicate name becomes an alias.</p>
     <div id="rosterTable"></div>
   </div>
 </section>
@@ -1409,7 +1409,8 @@ function renderRoster(){
             <button class="mini" onclick="saveBanAdjust(${idx},'${m}',document.getElementById('banDateInput-${idx}-${m}').value)">Save</button>
           </div>`;
         return html+'</div>';
-      }).join('')||'—'}</td>
+      }).join('')||'—'}
+        <button class="mini admin-only" title="Manually ban this player (not tied to a no-show)" onclick="uiBan(${idx})">🚫 Ban…</button></td>
       <td><button class="mini" onclick="delPlayer(${idx})">🗑</button></td>
     </tr>`;
   }).join('');
@@ -1488,6 +1489,48 @@ window.uiMerge=i=>{
     onPick:p=>doMerge(resolveKey(p.name))
   });
   wrap.querySelector('#umName').focus();
+};
+window.uiBan=i=>{
+  // Manual ban — for anything a no-show doesn't already cover (a rules breach,
+  // an officer decision, whatever). Reuses the exact same self-expiring
+  // banAdjust/baseline mechanism as "extend or reduce an active ban" (see
+  // saveBanAdjust below) — the only difference is this can be opened for a
+  // player who isn't currently banned at all, since the row only shows that
+  // control once a ban already exists. Sets banUntil[mode] the same way an
+  // automatic no-show ban would, so isBanned(), the New Event picker, and the
+  // fairness tie-break all treat it identically; the only thing it does NOT
+  // do is increment noShows — this isn't a no-show record.
+  const k=rosterKeys[i]; const p=db.players[k]; if(!p) return;
+  const days=db.settings.banDays||21;
+  const def=new Date(); def.setUTCDate(def.getUTCDate()+days);
+  const defDate=def.toISOString().slice(0,10);
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box" style="width:min(420px,94vw)">
+    <h3>Manually ban ${esc(p.name)}</h3>
+    <p class="help">Bans a player outright, same as an automatic no-show ban — they're excluded from selection in
+      that mode until the date you set, and it feeds the fairness tie-break exactly the same way. Doesn't add a
+      no-show to their count. Pick a mode already showing an active ban above and this extends/reduces it instead
+      of starting a new one.</p>
+    <label class="muted" style="font-size:12px">Mode</label>
+    <select id="ubMode" style="width:100%;margin-bottom:10px">
+      <option value="desert">Desert Storm</option>
+      <option value="canyon">Canyon Storm</option>
+    </select>
+    <label class="muted" style="font-size:12px">Banned until (defaults to today + ${days} days)</label>
+    <input id="ubDate" type="date" value="${defDate}" style="width:100%">
+    <div class="row" style="margin:12px 0 0"><button class="btn warn" id="ubGo">Ban</button>
+    <button class="btn ghost" id="ubX">Cancel</button></div></div>`;
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{ if(e.target===wrap) close(); };
+  wrap.querySelector('#ubX').onclick=close;
+  wrap.querySelector('#ubGo').onclick=()=>{
+    const mode=wrap.querySelector('#ubMode').value;
+    const until=wrap.querySelector('#ubDate').value;
+    if(!until){ toast('Pick a date','err'); return; }
+    close();
+    saveBanAdjust(i,mode,until);
+  };
 };
 window.clearBan=(i,mode)=>{
   const p=db.players[rosterKeys[i]];
@@ -2092,7 +2135,7 @@ suppressSave=true; recomputeDerived(); suppressSave=false;
 // Every mutating action goes through this guard, so a viewer can never write
 // even if they craft a click on a hidden control.
 for(const n of ['delApp','setAvail','dropMember','removeMember','removeWait','removeNa','promoteTo',
-  'toggleStarter','setGuar','uiRename','uiMerge','clearBan','delPlayer','resolveReview','removeReview',
+  'toggleStarter','setGuar','uiRename','uiMerge','clearBan','uiBan','startBanEdit','saveBanAdjust','delPlayer','resolveReview','removeReview',
   'markAtt','setBanLen','setAttNote','markAll','applyBans','delEvent','unlockEvent','switchMode',
   'sqAssign','sqMove','sqRename','sqSetCap','sqDelObj','sqAutoFill']){
   const f=window[n];
