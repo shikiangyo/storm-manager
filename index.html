@@ -125,7 +125,20 @@
       <label>Event date <input type="date" id="evDate"></label>
       <label>Team size <input type="number" id="evTeamSize" value="30" min="1" style="width:64px"></label>
       <label>Starters <input type="number" id="evStarters" value="20" min="0" style="width:64px"></label>
+      <label id="canyonSplitWrap" style="display:none">Team split
+        <select id="evCanyonSplit">
+          <option value="even">Even teams</option>
+          <option value="priority">Prioritise one team</option>
+        </select>
+      </label>
     </div>
+    <p class="help" id="canyonSplitHelp" style="display:none">
+      <b>Even teams</b> (default) splits applicants across Team A/B purely by who has more space, same as always.
+      <b>Prioritise one team</b> instead ranks everyone by <b>DS Ranking</b> grade (power breaking ties) and stacks the
+      highest-graded players onto Team A first, filling Team B with everyone else once Team A is full — same
+      grade-then-power ranking Desert Storm uses, set on the <b>Storm Players</b> tab (admin only). Either way,
+      <i>who</i> gets one of the spots is still decided purely by fairness order first — this only changes which
+      team a picked player lands on.</p>
   </div>
 
   <div class="panel">
@@ -281,8 +294,10 @@
       <i>who plays</i>; this decides <i>where they stand</i>. Records are matched to the roster by name, so renaming or
       merging someone on the Roster tab carries their CS data across automatically.
       <b>Power drives everything</b> — the snake draft and the sub pairing both use it, so anyone left at 0 will land badly.
-      <b>DS Ranking</b> (admin only, A–E) is separate again — it's used only when choosing Desert Storm's Noon/Evening
-      split on the New Event tab, to work out which side is stronger and stack the strongest "both" voters onto it.
+      <b>DS Ranking</b> (admin only, A–E) is separate again — a general team-strength grade, used on the New Event tab
+      two ways: for Desert Storm, to work out which side (Noon/Evening) is naturally stronger and stack the strongest
+      "both" voters onto it; for Canyon Storm, when you choose "Prioritise one team" instead of "Even teams", to stack
+      the highest-graded players straight onto Team A.
       Grade always beats power (a B outranks a C regardless of power); power only breaks a tie within the same grade.
       Leaving it unranked counts as the weakest grade for that calculation.</p>
     <div class="row">
@@ -971,7 +986,7 @@ function renderApps(){
 }
 // mode/date/size changes invalidate bans & fairness, so re-run assignment
 function reassignOnChange(){ if(apps.length) runAssign(); }
-document.getElementById('evMode').onchange=()=>{ updateModeChip(); reassignOnChange(); };
+document.getElementById('evMode').onchange=()=>{ updateModeChip(); updateCanyonSplitVisibility(); reassignOnChange(); };
 document.getElementById('evDate').onchange=reassignOnChange;
 document.getElementById('evTeamSize').onchange=reassignOnChange;
 document.getElementById('evStarters').onchange=reassignOnChange;
@@ -1066,6 +1081,8 @@ function runAssign(){
   const mode=document.getElementById('evMode').value;
   const date=document.getElementById('evDate').value;
   const teamSize=+document.getElementById('evTeamSize').value||30;
+  const canyonSplitEl=document.getElementById('evCanyonSplit');
+  const canyonSplit=(mode==='canyon'&&canyonSplitEl)?canyonSplitEl.value:null;
 
   const banned=[], pool=[], notAvail=[];
   for(const a of apps){
@@ -1146,6 +1163,29 @@ function runAssign(){
     }
     dsStrength={strongSide:res.side,weakSide,reason:res.reason,rows:res.rows,
       noon:teams.noon.map(m=>dsStrengthOf(m.name)),evening:teams.evening.map(m=>dsStrengthOf(m.name))};
+  } else if(mode==='canyon' && canyonSplit==='priority'){
+    /* Canyon Storm "Prioritise one team" — same shape as Desert Storm's second
+       pass above (inclusion and team size are already final; this only ever
+       moves an already-included "both" voter between the two teams), except
+       there's no side-strength contest to work out first: Team A (noon) is
+       always the stacked side. Pull every seated "both" voter back out,
+       rank strongest-to-weakest by DS Ranking grade + power (same dsCmp
+       Desert Storm uses), and refill Noon first so it fills up with the
+       highest grades before Evening gets anyone. A single-preference voter
+       (shouldn't normally happen in Canyon — applications are just
+       available/not available — but the CSV format still technically allows
+       noon/evening) keeps whatever side it already locked in above,
+       unmoved, same as Desert Storm's equivalent pass. */
+    const bothPicked=[];
+    for(const s of ['noon','evening']) teams[s]=teams[s].filter(m=>{
+      if(m.avail==='both'){ bothPicked.push(m); return false; }
+      return true;
+    });
+    const bothSorted=[...bothPicked].sort((a,b)=>dsCmp(dsStrengthOf(a.name),dsStrengthOf(b.name)));
+    for(const x of bothSorted){
+      const t=teams.noon.length<teamSize?'noon':'evening';
+      teams[t].push(x);
+    }
   }
   // starter order within each team: guaranteed first, then longest since last
   // START in this mode (never-started first); ties random via pre-shuffle
@@ -1154,7 +1194,7 @@ function runAssign(){
     teams[s]=shuffle(teams[s]).sort((a,b)=>(b.guaranteed-a.guaranteed)||(startRank(a)<startRank(b)?-1:startRank(a)>startRank(b)?1:0));
   const fair={};
   for(const x of pool) fair[x.p.name]={refused:x.f.refused, walk:x.f.walk};
-  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),fair,fairDates:F.dates,dsStrength};
+  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),fair,fairDates:F.dates,dsStrength,canyonSplit};
   renderAssignment();
 }
 
@@ -1185,7 +1225,7 @@ function renderAssignment(){
   };
   const fmtM=n=>n?(n/1e6).toFixed(0)+'m':'—';
   const dsBadge=name=>{
-    if(A.mode!=='desert') return '';
+    if(A.mode!=='desert' && !(A.mode==='canyon'&&A.canyonSplit==='priority')) return '';
     const d=dsStrengthOf(name);
     return `<span class="badge b-wait" title="DS Ranking${d.grade?'':' — unranked, counts as weakest'}">${d.grade||'—'} · ${fmtM(d.power)}</span> `;
   };
@@ -1199,7 +1239,8 @@ function renderAssignment(){
       <td><button class="mini" onclick="dropMember('${slot}',${i})">↓ drop</button> <button class="mini" title="Remove from event entirely" onclick="removeMember('${slot}',${i})">✕</button></td>
     </tr>`).join('');
     const strongTag=A.dsStrength&&A.dsStrength.strongSide===slot?' <span class="badge b-start">STRONGER SIDE</span>':(A.dsStrength&&A.dsStrength.weakSide===slot?' <span class="badge b-wait">weaker side</span>':'');
-    return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}${strongTag}</h3>
+    const priorityTag=A.canyonSplit==='priority'?(slot==='noon'?' <span class="badge b-start">PRIORITY TEAM</span>':' <span class="badge b-wait">everyone else</span>'):'';
+    return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}${strongTag}${priorityTag}</h3>
       <table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
   };
   // last 5 saved events for this mode, oldest -> newest, shown as grid-style history columns
@@ -1237,8 +1278,12 @@ function renderAssignment(){
     ${A.dsStrength.reason} The strongest "both" voters were used to fill it out; the rest went to ${A.dsStrength.weakSide==='noon'?'Noon':'Evening'}.
     Drag-free re-shuffling: use ↓/✕ on a team member and the waitlist's → buttons below if you want to move anyone by hand.</div>
     ${dsBreakdown}</div>`:'';
+  const canyonBanner=A.canyonSplit==='priority'?`<div class="banner view" style="margin-top:12px">
+    <div>⚔ <b>Team A is holding the strongest players</b> — ranked by DS Ranking grade (power breaking ties),
+    highest-graded first, until Team A was full; everyone else went to Team B. Drag-free re-shuffling: use ↓/✕ on a
+    team member and the waitlist's → buttons below if you want to move anyone by hand.</div></div>`:'';
   document.getElementById('assignResult').innerHTML=`
-    ${dsBanner}
+    ${dsBanner}${canyonBanner}
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
     ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th>${wlHistHead}<th></th></tr>${wl}</table>`:''}
     ${A.notAvailable.length?`<h3 style="color:var(--muted)">Voted — not available this week</h3><ul class="muted">${na}</ul>`:''}
@@ -2028,6 +2073,17 @@ function updateModeChip(){
   el.innerHTML=modeChipHtml(document.getElementById('evMode').value);
 }
 updateModeChip();
+// The "Even teams / Prioritise one team" split choice only means anything for
+// Canyon Storm — Desert Storm already has its own always-on Noon/Evening
+// strength split (see DS Ranking above), so hide it entirely for Desert
+// rather than showing a control that would silently do nothing there.
+function updateCanyonSplitVisibility(){
+  const isCanyon=document.getElementById('evMode').value==='canyon';
+  document.getElementById('canyonSplitWrap').style.display=isCanyon?'':'none';
+  document.getElementById('canyonSplitHelp').style.display=isCanyon?'':'none';
+}
+updateCanyonSplitVisibility();
+document.getElementById('evCanyonSplit').onchange=reassignOnChange;
 // Reconcile on every load: heals stale stats left by deletions/edits made
 // under older versions, and keeps everything consistent with the event log.
 suppressSave=true; recomputeDerived(); suppressSave=false;
@@ -2886,7 +2942,7 @@ window.csEdit=id=>{
     <select id="csfT1" style="width:100%;margin-bottom:10px">${CS_T1.map(t=>`<option${t===p.t1?' selected':''}>${t}</option>`).join('')}</select>
     <label class="muted" style="font-size:12px">Player type</label>
     <select id="csfType" style="width:100%;margin-bottom:10px">${CS_PTYPE.map(t=>`<option${t===p.ptype?' selected':''}>${t}</option>`).join('')}</select>
-    <label class="muted" style="font-size:12px">DS Ranking (Desert Storm team-strength only)</label>
+    <label class="muted" style="font-size:12px">DS Ranking (team-strength grade — Desert Storm side split, Canyon Storm priority split)</label>
     <select id="csfDsRank" style="width:100%;margin-bottom:10px">
       <option value=""${p.dsRank?'':' selected'}>— unranked —</option>
       ${CS_DSRANK.map(g=>`<option value="${g}"${p.dsRank===g?' selected':''}>${g}</option>`).join('')}
