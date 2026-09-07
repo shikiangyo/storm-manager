@@ -406,7 +406,7 @@ const CS_BRIEFING_DEFAULTS={
     goal:'capture and hold buildings to secure the win',
     remember:['Personal kills do not win the Canyon — holding territory does.',
               'If you are a sub who starts, find out who is missing in the plan and take their place.',
-              'Sub at 15mins or before if you are empty.'],
+              'Sub out at 15mins, no later. If you run out of troops before 15mins, of course you can leave earlier.'],
     objective:'Prioritize capturing and holding buildings.',
     rules:['Assign yourself to your designated buildings.',
            'Hold your position at all costs.',
@@ -415,7 +415,7 @@ const CS_BRIEFING_DEFAULTS={
     note:'Better to hold 2 buildings securely than to lose all 4 trying to spread too thin.',
     posterTag:'CAPTURE · HOLD · DOMINATE',
     posterFoot1:'30-MIN BATTLE · HOLD TERRITORY TO WIN',
-    posterFoot2:"Kills don't win the Canyon — buildings do. Sub at 15 min or earlier if empty."
+    posterFoot2:'Starter sub out at 15mins, no later.'
   },
   desert:{
     title:'DESERT STORM',
@@ -464,6 +464,22 @@ function migrate(d){
   ['canyon','desert'].forEach(m=>{
     d.cs.briefing[m]=Object.assign(JSON.parse(JSON.stringify(CS_BRIEFING_DEFAULTS[m])), d.cs.briefing[m]||{});
   });
+  // One-time wording refresh (2026-09-07): the old "sub at 15mins or before if you are
+  // empty" line read like 15 min was only a suggestion. Sharpened to a hard deadline —
+  // sub out AT 15 min, no later, and it's still fine to leave earlier if you're empty
+  // before then — and the poster's footer simplified to just that rule. Only overwrites
+  // if the stored text still matches the OLD wording verbatim, so a custom edit either
+  // field survives untouched.
+  (()=>{
+    const cb=d.cs.briefing.canyon; if(!cb) return;
+    const OLD_REMEMBER='Sub at 15mins or before if you are empty.';
+    const OLD_POSTERFOOT2="Kills don't win the Canyon — buildings do. Sub at 15 min or earlier if empty.";
+    if(Array.isArray(cb.remember)){
+      const i=cb.remember.indexOf(OLD_REMEMBER);
+      if(i>=0) cb.remember[i]='Sub out at 15mins, no later. If you run out of troops before 15mins, of course you can leave earlier.';
+    }
+    if(cb.posterFoot2===OLD_POSTERFOOT2) cb.posterFoot2='Starter sub out at 15mins, no later.';
+  })();
   d.cs.assign=d.cs.assign||{};
   d.cs.lastsub=d.cs.lastsub||{};
   d.notes=Array.isArray(d.notes)?d.notes:[];
