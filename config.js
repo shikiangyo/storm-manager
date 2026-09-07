@@ -15,10 +15,13 @@
 //                       Supabase Edge Function `public-thp-feed`, deployed
 //                       there with --no-verify-jwt so it needs no key at
 //                       all. Powers the "Sync THP from Kill Tracker" button
-//                       on the Storm Players tab: pulls each player's Power/
-//                       Army Power/Total Hero Power and writes it onto their
-//                       CS record here. Get the exact URL from whoever runs
-//                       Kill Tracker (Supabase dashboard > Edge Functions >
+//                       on the Storm Players tab: pulls each player's Total
+//                       Hero Power and OVERWRITES their existing Power field
+//                       with it (not a separate field — Pete wants THP to be
+//                       what the snake draft / side-strength / sub pairing
+//                       actually use, since they all already read Power).
+//                       Get the exact URL from whoever runs Kill Tracker
+//                       (Supabase dashboard > Edge Functions >
 //                       public-thp-feed > the function's own URL). Leave
 //                       blank to hide the button entirely.
 // ============================================================

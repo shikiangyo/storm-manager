@@ -300,14 +300,17 @@
       the highest-graded players straight onto Team A.
       Grade always beats power (a B outranks a C regardless of power); power only breaks a tie within the same grade.
       Leaving it unranked counts as the weakest grade for that calculation.
-      <b>THP</b> (Total Hero Power) is informational only — not used by any placement logic here — pulled in from the
-      separate Kill Tracker app via the "Sync THP from Kill Tracker" button (admin only; hidden if no feed URL is set
-      in config.js).</p>
+      The "Sync THP from Kill Tracker" button (admin only; hidden if no feed URL is set in config.js) pulls each
+      player's Total Hero Power from the separate Kill Tracker app and writes it straight into <b>Power</b> above —
+      it doesn't add a separate field, it replaces this number, so everything that already uses Power (snake draft,
+      side-strength, sub pairing) picks it up automatically. A "KT" badge next to Power marks a value that came from
+      that sync, and when it last ran; anyone not yet synced (or not matched by name) keeps their existing Power
+      untouched.</p>
     <div class="row">
       <button class="btn" id="csAdd">+ Add CS record</button>
       <label id="csImportLabel">Import CSV <input type="file" id="csImport" accept=".csv,.txt"></label>
       <button class="btn ghost admin-only" onclick="csPullRoster()">Pull in missing roster names</button>
-      <button class="btn ghost admin-only" id="csSyncThp" onclick="syncThpFromKillTracker()" style="display:none">🔄 Sync THP from Kill Tracker</button>
+      <button class="btn ghost admin-only" id="csSyncThp" onclick="syncThpFromKillTracker()" style="display:none" title="Overwrites Power with each player's Total Hero Power from Kill Tracker">🔄 Sync THP from Kill Tracker</button>
       <input type="text" id="csSearch" placeholder="🔍 Search…" style="margin-left:auto">
     </div>
     <p class="help">CSV columns: <code>name, power, t1, playertype</code> — the last two are optional and default to Tank / Holder.</p>
@@ -2966,23 +2969,22 @@ function renderCsPlayers(){
     <div class="stat"><div class="n">${all.filter(p=>p.ptype==='Roamer').length}</div><div class="l">Roamers</div></div>
     <div class="stat"><div class="n">${all.filter(p=>!inRoster(p.name)).length}</div><div class="l">Not on main roster</div></div>`;
 
-  wrap.innerHTML=`<table><thead><tr><th>Name</th><th>Power</th><th>T1 type</th><th>Player type</th><th class="admin-only">DS Ranking</th><th>THP</th><th></th></tr></thead><tbody>${
+  wrap.innerHTML=`<table><thead><tr><th>Name</th><th>Power</th><th>T1 type</th><th>Player type</th><th class="admin-only">DS Ranking</th><th></th></tr></thead><tbody>${
     shown.map(p=>`<tr>
       <td><b>${csEsc(p.name)}</b>${inRoster(p.name)?'':' <span class="badge b-ban" title="No matching player on the Roster tab">not on roster</span>'}
         ${(p.aliases||[]).length?`<div class="muted" style="font-size:11px">also: ${p.aliases.map(a=>
           `${csEsc(a)} <button class="mini admin-only" title="Remove this link" onclick="csUnlink('${p.id}','${csEsc(a).replace(/'/g,"&#39;")}')">✕</button>`).join(', ')}</div>`:''}</td>
-      <td${p.power?'':' style="color:var(--red)"'}>${p.power?p.power.toLocaleString():'— not set'}</td>
+      <td${p.power?'':' style="color:var(--red)"'}>${p.power?p.power.toLocaleString():'— not set'}${p.powerSyncedAt?` <span class="badge b-noon" title="Set from Kill Tracker's Total Hero Power, synced ${new Date(p.powerSyncedAt).toLocaleString()}">KT</span>`:''}</td>
       <td><span class="badge b-noon">${csEsc(p.t1)}</span></td>
       <td><span class="badge ${p.ptype==='Roamer'?'b-eve':'b-wait'}">${csEsc(p.ptype)}</span></td>
       <td class="admin-only"><select onchange="setDsRank('${p.id}',this.value)">
         <option value=""${p.dsRank?'':' selected'}>— unranked —</option>
         ${CS_DSRANK.map(g=>`<option value="${g}"${p.dsRank===g?' selected':''}>${g}</option>`).join('')}
       </select></td>
-      <td${p.thp?` title="Synced from Kill Tracker${p.thpUpdatedAt?' · '+new Date(p.thpUpdatedAt).toLocaleString():''}"`:''} class="muted">${p.thp?p.thp.toLocaleString():'—'}</td>
       <td style="text-align:right" class="admin-only">
         <button class="mini" onclick="csEdit('${p.id}')">✏️</button>
         <button class="mini" onclick="csDelete('${p.id}')">🗑</button></td>
-    </tr>`).join('')||'<tr><td colspan="7" class="muted">No CS records yet.</td></tr>'
+    </tr>`).join('')||'<tr><td colspan="6" class="muted">No CS records yet.</td></tr>'
   }</tbody></table>`;
 }
 window.setDsRank=(id,val)=>{
@@ -3059,11 +3061,24 @@ window.csPullRoster=()=>{
 /* =====================================================================
    THP SYNC — pull Total Hero Power from the separate Kill Tracker app's
    public read-only feed (see config.js's KILL_TRACKER_THP_FEED_URL
-   comment). Matches by the same name/alias chain csFind() already uses
-   for everything else on this tab, so a rename/merge on the Roster tab
-   keeps working here too. Only ever touches thp/thpUpdatedAt on existing
-   db.cs.roster records — never creates one, and a name Kill Tracker
-   doesn't recognize is just reported, not guessed at.
+   comment) and write it straight into each matched player's existing
+   `power` field — deliberately NOT a separate thp field. Power already
+   drives every placement decision on this tab (snake draft, DS Ranking's
+   power tie-break/side-strength bonus, sub pairing) and Pete wants THP to
+   BE that number going forward rather than living alongside it, so this
+   overwrites power in place — every existing algorithm picks it up with
+   zero other code changes. `powerSyncedAt` is set alongside it purely so
+   the table can show a "KT" badge marking which players' power came from
+   an automatic sync vs manual entry/CSV import; it's informational only,
+   nothing reads it for placement.
+
+   Matches by the same name/alias chain csFind() already uses for
+   everything else on this tab, so a rename/merge on the Roster tab keeps
+   working here too. Only ever touches existing db.cs.roster records —
+   never creates one, and a name Kill Tracker doesn't recognize is just
+   reported, not guessed at. A player Kill Tracker hasn't scanned yet (no
+   THP computed for them) is left with whatever power they already have —
+   never zeroed out.
    ===================================================================== */
 window.syncThpFromKillTracker=async()=>{
   if(!KILL_TRACKER_THP_FEED_URL){ toast('No Kill Tracker feed URL set in config.js','err'); return; }
@@ -3074,18 +3089,18 @@ window.syncThpFromKillTracker=async()=>{
     if(!r.ok) throw new Error(`feed returned ${r.status}`);
     const data=await r.json();
     const players=Array.isArray(data)?data:(data.players||[]);
-    if(!players.length){ toast('Kill Tracker feed returned no players','err'); return; }
+    if(!players.length){ toast('Kill Tracker feed returned no players yet','err'); return; }
     const now=new Date().toISOString();
     let updated=0; const unmatched=[];
     for(const pl of players){
       if(pl.thp==null) continue;
       const rec=csFind(pl.name);
       if(!rec){ unmatched.push(pl.name); continue; }
-      rec.thp=pl.thp; rec.thpUpdatedAt=now;
+      rec.power=Math.round(pl.thp); rec.powerSyncedAt=now;
       updated++;
     }
     if(updated){ save(); renderCsPlayers(); }
-    toast(`THP synced: ${updated} updated${unmatched.length?`, ${unmatched.length} not matched — see console`:''}`);
+    toast(`Power synced from Kill Tracker THP: ${updated} updated${unmatched.length?`, ${unmatched.length} not matched — see console`:''}`);
     if(unmatched.length) console.log('Storm Manager THP sync — names not matched to a CS record:',unmatched);
   }catch(err){
     toast(`THP sync failed: ${err&&err.message||err}`,'err');
