@@ -165,6 +165,7 @@
       <button class="btn ok" id="btnSaveEvent" style="display:none">✓ Confirm &amp; save event</button>
       <button class="btn ghost" id="btnExportTeams" style="display:none">Export teams CSV</button>
       <button class="btn ghost" id="btnCopyTeams" style="display:none">Copy roster text</button>
+      <button class="btn ghost" id="btnDownloadTeamsPng" style="display:none">📷 Download teams PNG</button>
     </div>
     <div id="assignResult"></div>
   </div>
@@ -1315,8 +1316,9 @@ function renderAssignment(){
   document.getElementById('btnSaveEvent').style.display='';
   document.getElementById('btnExportTeams').style.display='';
   document.getElementById('btnCopyTeams').style.display='';
+  document.getElementById('btnDownloadTeamsPng').style.display='';
 }
-function hideSaveButtons(){ ['btnSaveEvent','btnExportTeams','btnCopyTeams'].forEach(id=>document.getElementById(id).style.display='none'); }
+function hideSaveButtons(){ ['btnSaveEvent','btnExportTeams','btnCopyTeams','btnDownloadTeamsPng'].forEach(id=>document.getElementById(id).style.display='none'); }
 
 window.dropMember=(slot,i)=>{
   const m=pendingAssignment.teams[slot].splice(i,1)[0];
@@ -1396,6 +1398,112 @@ document.getElementById('btnCopyTeams').onclick=()=>{
   if(A.waitlist.length) txt+='\nWaitlist: '+A.waitlist.map(m=>m.name).join(', ')+'\n';
   if(A.notAvailable.length) txt+='Not available: '+A.notAvailable.map(m=>m.name).join(', ')+'\n';
   navigator.clipboard.writeText(txt).then(()=>toast('Roster copied — paste into Discord/chat'));
+};
+
+/* Renders the same two teams shown in "3 · Teams" as a shareable image — noon
+   and evening side by side, same info as the on-screen table (role, Power,
+   DS Ranking grade when set) plus waitlist, so it can be dropped straight into
+   Discord/WhatsApp instead of a screenshot. Reuses csDownloadPNG's SVG->canvas
+   ->PNG pipeline (already used for the Squad Setup poster) rather than adding
+   a second image-export mechanism. Power/grade come from dsStrengthOf() —
+   the same CS-roster lookup Desert/priority-Canyon already use for their
+   on-screen badges — shown here for every mode, since a screenshot-replacement
+   is more useful with Power on it regardless of mode. */
+function evTeamsSVG(A){
+  const EV={bg:'#12151c',panel:'#1b202b',panel2:'#232a38',border:'#323b4d',
+    text:'#e6eaf2',muted:'#8b96ab',accent:'#f0a832',accent2:'#4a9eff',
+    green:'#3ecf8e',red:'#f05b5b',purple:'#a78bfa'};
+  const fmtM=n=>n?(n>=1e6?(n/1e6).toFixed(n%1e6?1:0)+'m':(n/1e3).toFixed(0)+'k'):'—';
+  const hasSubtitle=!!(A.dsStrength||A.canyonSplit==='priority');
+  const COLW=430, GAP=24, PAD=28, ROWH=22, TOP=hasSubtitle?96:72;
+  const rowsOf=slot=>A.teams[slot].map((m,i)=>{
+    const d=dsStrengthOf(m.name);
+    return {i,name:m.name,starter:i<A.starters,guaranteed:m.guaranteed,grade:d.grade,power:d.power};
+  });
+  const noon=rowsOf('noon'), evening=rowsOf('evening');
+  const colH=slot=>{
+    const rows=slot==='noon'?noon:evening;
+    const subLine=rows.some(r=>!r.starter)?ROWH:0; // "SUBS" divider row, once
+    return 54+rows.length*ROWH+subLine+16;
+  };
+  const bodyH=Math.max(colH('noon'),colH('evening'));
+  const waitLines=A.waitlist.length?Math.ceil(esc(A.waitlist.map(m=>m.name).join(', ')).length/110):0;
+  const naLines=A.notAvailable.length?Math.ceil(esc(A.notAvailable.map(m=>m.name).join(', ')).length/110):0;
+  const footH=(waitLines||naLines)?24+(waitLines?16+waitLines*16:0)+(naLines?16+naLines*16:0)+12:0;
+  const W=PAD*2+COLW*2+GAP, H=TOP+bodyH+footH+PAD;
+
+  const col=(slot,label,accent,x)=>{
+    const rows=slot==='noon'?noon:evening;
+    let s=`<rect x="${x}" y="${TOP}" width="${COLW}" height="${colH(slot)}" rx="10" fill="${EV.panel}" stroke="${EV.border}"/>
+<rect x="${x}" y="${TOP}" width="${COLW}" height="4" rx="2" fill="${accent}"/>
+<text x="${x+18}" y="${TOP+30}" font-family="Arial,sans-serif" font-weight="700" font-size="16" fill="${accent}">${esc(label)} — ${rows.length}/${A.teamSize}</text>`;
+    let y=TOP+54, sawSub=false;
+    rows.forEach(r=>{
+      if(!r.starter&&!sawSub){
+        s+=`<text x="${x+18}" y="${y+13}" font-family="Arial,sans-serif" font-weight="700" font-size="11" letter-spacing="1" fill="${EV.muted}">SUBS</text>`;
+        y+=ROWH; sawSub=true;
+      }
+      const roleColor=r.starter?EV.green:EV.accent;
+      const tags=(r.guaranteed?' G':'')+(r.grade?` · ${r.grade}`:'');
+      s+=`<text x="${x+18}" y="${y+14}" font-family="Arial,sans-serif" font-size="12" fill="${EV.muted}">${r.i+1}.</text>
+<text x="${x+42}" y="${y+14}" font-family="Arial,sans-serif" font-size="13" fill="${EV.text}">${esc(r.name)}</text>
+<text x="${x+COLW-150}" y="${y+14}" font-family="Arial,sans-serif" font-size="11" fill="${roleColor}">${r.starter?'STARTER':'SUB'}${esc(tags)}</text>
+<text x="${x+COLW-18}" y="${y+14}" text-anchor="end" font-family="Arial,sans-serif" font-size="12" fill="${EV.muted}">${fmtM(r.power)}</text>`;
+      y+=ROWH;
+    });
+    return s;
+  };
+
+  let foot='';
+  if(waitLines||naLines){
+    let fy=TOP+bodyH+24;
+    foot+=`<rect x="${PAD}" y="${TOP+bodyH+8}" width="${COLW*2+GAP}" height="${footH-8}" rx="8" fill="${EV.panel2}" stroke="${EV.border}"/>`;
+    if(waitLines){
+      foot+=`<text x="${PAD+16}" y="${fy+8}" font-family="Arial,sans-serif" font-weight="700" font-size="12" fill="${EV.muted}">WAITLIST</text>`;
+      foot+=wrapText(A.waitlist.map(m=>m.name).join(', '),PAD+16,fy+26,110,EV.text);
+      fy+=16+waitLines*16;
+    }
+    if(naLines){
+      foot+=`<text x="${PAD+16}" y="${fy+8}" font-family="Arial,sans-serif" font-weight="700" font-size="12" fill="${EV.muted}">NOT AVAILABLE</text>`;
+      foot+=wrapText(A.notAvailable.map(m=>m.name).join(', '),PAD+16,fy+26,110,EV.text);
+    }
+  }
+  const modeLabel=(MODES[A.mode]||A.mode).toUpperCase();
+  const subtitle=A.dsStrength
+    ? `${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} is the stronger side`
+    : A.canyonSplit==='priority' ? 'Team A (Noon) is the priority team' : '';
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Arial,sans-serif">
+<rect x="0" y="0" width="${W}" height="${H}" fill="${EV.bg}"/>
+<rect x="0" y="0" width="${W}" height="4" fill="${EV.accent}"/>
+<text x="${PAD}" y="46" font-family="Arial,sans-serif" font-weight="700" font-size="24" fill="${EV.text}">${esc(modeLabel)} — ${esc(A.date)}</text>
+${subtitle?`<text x="${PAD}" y="70" font-family="Arial,sans-serif" font-weight="700" font-size="13" fill="${EV.accent}">${esc(subtitle.toUpperCase())}</text>`:''}
+${col('noon','☀️ NOON',EV.accent2,PAD)}
+${col('evening','🌙 EVENING',EV.purple,PAD+COLW+GAP)}
+${foot}
+</svg>`;
+}
+// Simple manual word-wrap for the SVG waitlist/not-available lines (no <foreignObject> —
+// keeps this renderable straight through the same canvas pipeline as the poster).
+function wrapText(str,x,y,maxChars,color){
+  const words=str.split(', '); const lines=[]; let cur='';
+  words.forEach(w=>{
+    const next=cur?cur+', '+w:w;
+    if(next.length>maxChars){ lines.push(cur); cur=w; } else cur=next;
+  });
+  if(cur) lines.push(cur);
+  return lines.map((l,i)=>`<text x="${x}" y="${y+i*16}" font-family="Arial,sans-serif" font-size="12" fill="${color}">${esc(l)}</text>`).join('');
+}
+document.getElementById('btnDownloadTeamsPng').onclick=async()=>{
+  const A=pendingAssignment; if(!A)return;
+  const btn=document.getElementById('btnDownloadTeamsPng');
+  btn.disabled=true; const orig=btn.textContent; btn.textContent='Rendering…';
+  try{
+    await csDownloadPNG(evTeamsSVG(A), `${A.mode}-${A.date}-teams.png`, 2);
+  }catch(e){
+    toast('PNG export failed: '+(e&&e.message||e),'err');
+  }finally{
+    btn.disabled=false; btn.textContent=orig;
+  }
 };
 
 /* ================= roster tab ================= */
