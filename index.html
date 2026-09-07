@@ -2462,11 +2462,68 @@ function strongerSideOf(noonSingles,eveningSingles){
   return {side, reason, rows, noonScore, eveningScore, noonWins, eveningWins};
 }
 
+/* Decide which starters get this week's subs, and match each to the closest
+   available sub (same T1 type first, then closest power) — shared by Canyon's
+   csPlace and Desert's csPlaceDesert. Two modes, chosen per-run when the
+   admin hits Auto-assign (see csAskSubMode/csRun):
+
+     'setup'   (default) — every sub-capable group keeps its own Storm Setup
+               sub count untouched. Within each such group, THAT group's own
+               weakest-by-Power starters get its quota, tie-broken by who
+               subbed longest ago (db.cs.lastsub). A group's sub count can
+               never differ from what Storm Setup says.
+
+     'weakest' — Storm Setup's per-group counts are ignored completely: every
+               starter squad-wide (any group) is ranked by DS Ranking grade,
+               worst first (unranked counts as the weakest tier, same
+               convention as dsStrengthOf), Power breaking ties within a
+               grade — and the whole sub pool goes to the overall weakest
+               starters, wherever they happen to sit. One group can end up
+               with every sub this week and another with none; the total
+               number of subs handed out is unchanged either way, only which
+               starters (and which groups) receive them.
+
+   Neither mode touches db.cs.lastsub itself — "Log sub pairings" (csLogSubs)
+   keeps recording who received a sub regardless of which mode picked them,
+   so the rotation history stays intact if 'setup' mode (which is the only
+   one that reads it) is used again later.                                  */
+function csAssignSubs(out, groups, subsPool, lastsub, subMode){
+  const free=[...subsPool];
+  const give=(st,groupKey)=>{
+    if(!free.length) return;
+    let best=null;
+    free.forEach((sub,idx)=>{
+      const score=(st.t1===sub.t1?0:1)*1e9+Math.abs(st.power-sub.power);
+      if(!best||score<best.score) best={idx,sub,score};
+    });
+    out[groupKey].pairs.push({starter:st,sub:best.sub});
+    free.splice(best.idx,1);
+  };
+  if(subMode==='weakest'){
+    const weakScore=p=>(p.dsRank&&DS_GRADE_SCORE[p.dsRank])?DS_GRADE_SCORE[p.dsRank]:DS_GRADE_SCORE.E;
+    const tagged=[];
+    groups.forEach(g=>out[g.key].starters.forEach(st=>tagged.push({st,groupKey:g.key})));
+    tagged.sort((a,b)=>(weakScore(a.st)-weakScore(b.st))||(a.st.power-b.st.power));
+    for(const {st,groupKey} of tagged){
+      if(!free.length) break;
+      give(st,groupKey);
+    }
+  } else {
+    groups.forEach(g=>{
+      if(g.subs<=0) return;
+      [...out[g.key].starters].sort((a,b)=>{
+        if(a.power!==b.power) return a.power-b.power;
+        return (lastsub[a.id]||'0000-00-00').localeCompare(lastsub[b.id]||'0000-00-00');
+      }).slice(0,g.subs).forEach(st=>give(st,g.key));
+    });
+  }
+}
+
 /* =====================================================================
    PLACEMENT — the CS Commander algorithm, with power in place of the
    old performance score (subs are paired by power).
    ===================================================================== */
-function csPlace(players, groups, lastsub, roles){
+function csPlace(players, groups, lastsub, roles, subMode){
   roles=roles||{};
   const byPower=(a,b)=>b.power-a.power;
   const out={};
@@ -2560,28 +2617,13 @@ function csPlace(players, groups, lastsub, roles){
         }
       }
 
-  // Pair subs: within each sub-capable group the LOWEST-POWER starters get
-  // the subs, matched to a sub of the same T1 type and closest power.
-  let free=subs;
-  groups.forEach(g=>{
-    if(g.subs<=0) return;
-    const slot=out[g.key];
-    [...slot.starters].sort((a,b)=>{
-      if(a.power!==b.power) return a.power-b.power;
-      return (lastsub[a.id]||'0000-00-00').localeCompare(lastsub[b.id]||'0000-00-00');
-    }).slice(0,g.subs).forEach(st=>{
-      if(!free.length) return;
-      let best=null;
-      free.forEach((sub,idx)=>{
-        const score=(st.t1===sub.t1?0:1)*1e9+Math.abs(st.power-sub.power);
-        if(!best||score<best.score) best={idx,sub,score};
-      });
-      slot.pairs.push({starter:st,sub:best.sub});
-      free.splice(best.idx,1);
-    });
-  });
+  // Pair subs: see csAssignSubs above for 'setup' vs 'weakest' mode.
+  csAssignSubs(out, groups, subs, lastsub, subMode);
+  const usedIds=new Set();
+  groups.forEach(g=>out[g.key].pairs.forEach(p=>usedIds.add(p.sub.id)));
+  const free=subs.filter(s=>!usedIds.has(s.id));
 
-  return {result:out, benched:[...free,...subPool], midStarters};
+  return {result:out, benched:[...free,...subPool], midStarters, subMode:subMode||'setup'};
 }
 
 /* Desert placement, per the alliance's actual method:
@@ -2614,7 +2656,7 @@ const DESERT_SLOTS=['loil','roil','sci','float','roil','loil','float','sci','sci
                     'info','float','roil','loil','float','sci','loil','roil','info','float'];
 const DESERT_FILL =['loil','roil','sci','info','float'];
 
-function csPlaceDesert(players, groups, lastsub, roles){
+function csPlaceDesert(players, groups, lastsub, roles, subMode){
   roles=roles||{};
   const byPower=(a,b)=>b.power-a.power;
   const out={}; groups.forEach(g=>out[g.key]={starters:[],pairs:[],extraSubs:[]});
@@ -2696,23 +2738,14 @@ function csPlaceDesert(players, groups, lastsub, roles){
     if(a.power!==b.power) return a.power-b.power;
     return (lastsub[a.id]||'0000-00-00').localeCompare(lastsub[b.id]||'0000-00-00');
   });
-  let free=subPool.splice(0,needSubs);
-  groups.forEach(g=>{
-    if(g.subs<=0) return;
-    const slot=out[g.key];
-    [...slot.starters].sort((a,b)=>a.power-b.power).slice(0,g.subs).forEach(st=>{
-      if(!free.length) return;
-      let best=null;
-      free.forEach((sub,idx)=>{
-        const score=(st.t1===sub.t1?0:1)*1e9+Math.abs(st.power-sub.power);
-        if(!best||score<best.score) best={idx,sub,score};
-      });
-      slot.pairs.push({starter:st,sub:best.sub});
-      free.splice(best.idx,1);
-    });
-  });
+  const subs=subPool.splice(0,needSubs);
+  // Pair subs: see csAssignSubs above for 'setup' vs 'weakest' mode.
+  csAssignSubs(out, groups, subs, lastsub, subMode);
+  const usedIds=new Set();
+  groups.forEach(g=>out[g.key].pairs.forEach(p=>usedIds.add(p.sub.id)));
+  const free=subs.filter(s=>!usedIds.has(s.id));
 
-  return {result:out, benched:[...leftover,...free,...subPool], notes};
+  return {result:out, benched:[...leftover,...free,...subPool], notes, subMode:subMode||'setup'};
 }
 
 function csSideLabel(groups, side){
@@ -3322,6 +3355,7 @@ function renderCsBuild(){
       <span class="badge ${team==='A'?'b-guar':'b-noon'}" style="font-size:13px;padding:4px 12px">${lab.team}</span>
       <span class="badge b-wait">${MODES[mode]}</span>
       <span class="muted">${picked.length} picked · ${starters} starters · ${subs} subs</span>
+      ${A?`<span class="badge ${A.subMode==='weakest'?'b-ban':'b-wait'}" title="${A.subMode==='weakest'?'Every sub went to the squad’s overall weakest starters, ignoring each group’s Storm Setup sub count':'Each group kept its own Storm Setup sub count'}">${A.subMode==='weakest'?'Subs: weakest overall':'Subs: as per setup'}</span>`:''}
       <span style="flex:1"></span>
       <button class="btn ${team==='A'?'gold':''} admin-only" onclick="csAskAlliance()">⚡ ${A?'Re-assign':'Auto-assign'} ${lab.team}</button>
       ${A?`<button class="btn ghost admin-only" onclick="csClear()">✕ Clear line-up</button>`:''}
@@ -3357,40 +3391,60 @@ function csLineupHtml(A,team){
     ${A.benched.length?`<p class="help" style="margin-top:10px">Benched (spare): ${A.benched.map(p=>`<span onclick="csTap('${p.id}')" ${pill(p.id)}>${csEsc(p.name)}</span> ${tag(p)}`).join(', ')}</p>`:''}`;
 }
 
-window.csAskAlliance=()=>{
-  const ctx=csCtx(); if(!ctx) return;
-  if(ctx.mode==='desert'){ csRun('desert',null); return; }   // no 2v1 split in Desert
+// Asked every time Auto-assign/Re-assign runs — see csAssignSubs for what each
+// choice actually does. Not remembered between runs on purpose: Pete wanted
+// this as a per-run decision, not a setting.
+function csAskSubMode(cb){
   const wrap=document.createElement('div'); wrap.className='modal';
-  wrap.innerHTML=`<div class="box"><h3>Which side are we this week?</h3>
-    <p class="help">Canyon Storm is 2 alliances vs 1. Pick which we are.</p>
-    <div class="row"><button class="btn gold" id="caRB" style="flex:1">Rulebringers<br><span style="font-weight:400;opacity:.75;font-size:11px">the lone alliance</span></button>
-    <button class="btn" id="caDB" style="flex:1">Dawnbreakers<br><span style="font-weight:400;opacity:.75;font-size:11px">one of the pair</span></button></div></div>`;
+  wrap.innerHTML=`<div class="box"><h3>Sub pairings this week?</h3>
+    <p class="help">Who gets this week's subs?</p>
+    <div class="row">
+      <button class="btn gold" id="csmSetup" style="flex:1">As per Storm Setup<br><span style="font-weight:400;opacity:.75;font-size:11px">each group keeps its own sub count</span></button>
+      <button class="btn" id="csmWeak" style="flex:1">Weakest overall<br><span style="font-weight:400;opacity:.75;font-size:11px">ranked lowest, then power — ignores each group's count, could all land in one group</span></button>
+    </div></div>`;
   document.body.appendChild(wrap);
   wrap.onclick=e=>{ if(e.target===wrap) wrap.remove(); };
-  wrap.querySelector('#caRB').onclick=()=>{ wrap.remove(); csRun('rulebringers',null); };
-  wrap.querySelector('#caDB').onclick=()=>{
-    wrap.innerHTML=`<div class="box"><h3>Dawnbreakers — which half?</h3>
-      <p class="help">Which side of the map are we holding? This labels the mid groups.</p>
-      <div class="row"><button class="btn" id="csL" style="flex:1">Left</button>
-      <button class="btn" id="csR" style="flex:1">Right</button></div></div>`;
-    wrap.querySelector('#csL').onclick=()=>{ wrap.remove(); csRun('dawnbreakers','Left'); };
-    wrap.querySelector('#csR').onclick=()=>{ wrap.remove(); csRun('dawnbreakers','Right'); };
-  };
+  wrap.querySelector('#csmSetup').onclick=()=>{ wrap.remove(); cb('setup'); };
+  wrap.querySelector('#csmWeak').onclick=()=>{ wrap.remove(); cb('weakest'); };
+}
+
+window.csAskAlliance=()=>{
+  const ctx=csCtx(); if(!ctx) return;
+  csAskSubMode(subMode=>{
+    if(ctx.mode==='desert'){ csRun('desert',null,subMode); return; }   // no 2v1 split in Desert
+    const wrap=document.createElement('div'); wrap.className='modal';
+    wrap.innerHTML=`<div class="box"><h3>Which side are we this week?</h3>
+      <p class="help">Canyon Storm is 2 alliances vs 1. Pick which we are.</p>
+      <div class="row"><button class="btn gold" id="caRB" style="flex:1">Rulebringers<br><span style="font-weight:400;opacity:.75;font-size:11px">the lone alliance</span></button>
+      <button class="btn" id="caDB" style="flex:1">Dawnbreakers<br><span style="font-weight:400;opacity:.75;font-size:11px">one of the pair</span></button></div></div>`;
+    document.body.appendChild(wrap);
+    wrap.onclick=e=>{ if(e.target===wrap) wrap.remove(); };
+    wrap.querySelector('#caRB').onclick=()=>{ wrap.remove(); csRun('rulebringers',null,subMode); };
+    wrap.querySelector('#caDB').onclick=()=>{
+      wrap.innerHTML=`<div class="box"><h3>Dawnbreakers — which half?</h3>
+        <p class="help">Which side of the map are we holding? This labels the mid groups.</p>
+        <div class="row"><button class="btn" id="csL" style="flex:1">Left</button>
+        <button class="btn" id="csR" style="flex:1">Right</button></div></div>`;
+      wrap.querySelector('#csL').onclick=()=>{ wrap.remove(); csRun('dawnbreakers','Left',subMode); };
+      wrap.querySelector('#csR').onclick=()=>{ wrap.remove(); csRun('dawnbreakers','Right',subMode); };
+    };
+  });
 };
 
-function csRun(setupKey, side){
+function csRun(setupKey, side, subMode){
   const ctx=csCtx(); if(!ctx) return;
   const roles={}; ctx.picked.forEach(p=>roles[p.id]=p.role);
   const groups=csSideLabel(db.cs.setups[setupKey]||CS_DEFAULT_RB, setupKey==='dawnbreakers'?side:null);
   const place=ctx.mode==='desert'?csPlaceDesert:csPlace;
-  const res=place(ctx.picked, groups, db.cs.lastsub, roles);
+  const res=place(ctx.picked, groups, db.cs.lastsub, roles, subMode);
   db.cs.assign[ctx.ev.id+'|'+ctx.slot]={
     ...res, groups, setupKey, notes:res.notes||[],
     gameMode:ctx.mode,
     teamLabel:ctx.lab.team, badgeTop:ctx.lab.badgeTop, badgeVal:ctx.lab.badgeVal,
     alliance:CS_ALLIANCE_LABEL[setupKey]||MODES[ctx.mode],
     allianceKey:setupKey,
-    side:setupKey==='dawnbreakers'?side:null
+    side:setupKey==='dawnbreakers'?side:null,
+    subMode:subMode||'setup'
   };
   csSel=null; save(); renderCsBuild();
   toast(`${ctx.lab.team} assigned`);
