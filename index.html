@@ -3013,7 +3013,25 @@ ${rivet(x+13,y+13)}${rivet(x+CW-13,y+13)}${rivet(x+13,y+h-13)}${rivet(x+CW-13,y+
 :`<rect x="${x}" y="${y}" width="${CW}" height="4" fill="${acc}"/>`}
 <rect x="${x+14}" y="${y+16}" width="${namedRoamers?120:86}" height="20" rx="3" fill="${acc}"/>
 <text x="${x+14+(namedRoamers?60:43)}" y="${y+30}" text-anchor="middle" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="12" letter-spacing="1" fill="#160c05">${namedRoamers?'FREE ROAMERS':'GROUP '+(idx+1)}</text>
-<text x="${x+14+(namedRoamers?130:96)}" y="${y+31}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="11" fill="${team==='A'?'#e9c887':'#8fd0e0'}">${csEsc(g.short)}</text>
+${(()=>{
+  // Long labels (e.g. Dawnbreakers' side-prefixed "RIGHT · Data Center · Serum
+  // Factory") can overrun the card at the fixed 11px this used to be — shrink
+  // to fit, and only as a last resort ellipsize, rather than let it spill
+  // past the card edge.
+  const shortText=g.short||'';
+  const shortX=x+14+(namedRoamers?130:96);
+  const availW=(x+CW-14)-shortX;
+  const CHAR_W=0.52; // approx avg glyph width factor for condensed Oswald caps
+  const FLOOR_FS=8, MAX_FS=11;
+  let shortFs=Math.min(MAX_FS, Math.max(FLOOR_FS, availW/(Math.max(1,shortText.length)*CHAR_W)));
+  let shortDisp=shortText;
+  const maxCharsAtFloor=Math.floor(availW/(FLOOR_FS*CHAR_W));
+  if(shortText.length>maxCharsAtFloor && maxCharsAtFloor>3){
+    shortDisp=shortText.slice(0,maxCharsAtFloor-1)+'…';
+    shortFs=FLOOR_FS;
+  }
+  return `<text x="${shortX}" y="${y+31}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="600" font-size="${shortFs.toFixed(1)}" fill="${team==='A'?'#e9c887':'#8fd0e0'}">${csEsc(shortDisp)}</text>`;
+})()}
 <line x1="${x+14}" y1="${y+48}" x2="${x+CW-14}" y2="${y+48}" stroke="${bd}" stroke-width="1"/>
 <text x="${x+14}" y="${y+70}" font-family="Oswald,'Arial Narrow',sans-serif" font-weight="700" font-size="11" letter-spacing="2" fill="${acc}">${label}</text>`;
     list.forEach((p,i)=>{
