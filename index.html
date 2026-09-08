@@ -2951,7 +2951,8 @@ function csMailText(team, groups, assign, fmt){
   }
   groups.forEach((g,i)=>{
     const slot=assign.result[g.key];
-    if(g.kind==='roam'&&g.subs<=0){
+    const hasPairs=!!(slot.pairs&&slot.pairs.length);
+    if(g.kind==='roam'&&!hasPairs){
       L.push('', (wa?b('Free-Roamers:')+' ':'Roamers: ')+csNames(slot.starters));
       return;
     }
@@ -2959,7 +2960,7 @@ function csMailText(team, groups, assign, fmt){
       ? (wa?b('Free-Roamers'):'Free-Roamers')
       : (wa?b(`Group ${i+1}: ${g.name}`):`Group ${i+1} ${g.name}`);
     L.push('',head);
-    if(g.subs>0){
+    if(hasPairs){
       L.push(wa?b('Starter ⇄ Sub'):'Starter <-> Sub');
       slot.starters.forEach(st=>{
         const pr=slot.pairs.find(p=>p.starter.id===st.id);
@@ -2997,7 +2998,7 @@ function csPoster(team, groups, assign){
     const acc=isRoam?T.accent2:T.accent;
     const fill=isRoam?(team==='A'?'#2a1206':'#2a1c06'):T.panel;
     const bd=isRoam?T.accent2:T.border;
-    const paired=g.subs>0;
+    const paired=!!(slot.pairs&&slot.pairs.length);
     const label=paired?'STARTER ⇄ SUB':(namedRoamers?'MOBILE STRIKE':'START');
     const list=slot.starters, n=list.length;
     const twoCol=n>4, rows=Math.max(1,Math.ceil(n/(twoCol?2:1)));
