@@ -767,6 +767,10 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
 let apps=[]; // {name, avail:'noon'|'evening'|'both'}
 let review=[]; // {name, raw} — applications with unrecognised availability
 let pendingAssignment=null;
+// The New Event screen's STARTER/SUB badge is tap-to-select, tap-another-to-swap
+// (mirrors the same pattern on the Storm Build board) — {slot,i} of the first tap,
+// awaiting a second tap in the same team to swap positions (and so roles).
+let evSwapSel=null;
 
 document.getElementById('evDate').value = new Date().toISOString().slice(0,10);
 
@@ -1118,6 +1122,7 @@ function fairnessOf(F, player){
 
 function runAssign(){
   if(!apps.length) return;
+  evSwapSel=null;
   const mode=document.getElementById('evMode').value;
   const date=document.getElementById('evDate').value;
   const teamSize=+document.getElementById('evTeamSize').value||30;
@@ -1271,11 +1276,12 @@ function renderAssignment(){
   };
   const teamHtml=(slot,label)=>{
     const list=A.teams[slot];
+    const sel=evSwapSel&&evSwapSel.slot===slot&&evSwapSel.i;
     const rows=list.map((m,i)=>`<tr>
       <td>${i+1}</td>
       <td>${esc(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)} ${dsBadge(m.name)}</td>
       <td>${history(m.name)}</td>
-      <td><span class="badge ${i<A.starters?'b-start':'b-sub'}" style="cursor:pointer" onclick="toggleStarter('${slot}',${i})">${i<A.starters?'STARTER':'SUB'}</span></td>
+      <td><span class="badge ${i<A.starters?'b-start':'b-sub'}" style="cursor:pointer${sel===i?';outline:2px solid var(--accent);outline-offset:1px':''}" title="${sel===i?'Tap again to cancel':evSwapSel?'Tap to swap with the selected player':'Tap, then tap another player in this team to swap them'}" onclick="evToggleTap('${slot}',${i})">${i<A.starters?'STARTER':'SUB'}</span></td>
       <td><button class="mini" onclick="dropMember('${slot}',${i})">↓ drop</button> <button class="mini" title="Remove from event entirely" onclick="removeMember('${slot}',${i})">✕</button></td>
     </tr>`).join('');
     const strongTag=A.dsStrength&&A.dsStrength.strongSide===slot?' <span class="badge b-start">STRONGER SIDE</span>':(A.dsStrength&&A.dsStrength.weakSide===slot?' <span class="badge b-wait">weaker side</span>':'');
@@ -1328,7 +1334,7 @@ function renderAssignment(){
     ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th>${wlHistHead}<th></th></tr>${wl}</table>`:''}
     ${A.notAvailable.length?`<h3 style="color:var(--muted)">Voted — not available this week</h3><ul class="muted">${na}</ul>`:''}
     ${A.banned.length?`<h3 style="color:var(--red)">Excluded — no-show ban (cannot be added)</h3><ul class="muted">${bn}</ul>`:''}
-    <p class="help">Starters: guaranteed first, then longest since last started in this mode. Click a STARTER/SUB badge to change roles manually. Nothing is recorded until you confirm.</p>`;
+    <p class="help">Starters: guaranteed first, then longest since last started in this mode. Tap a STARTER/SUB badge, then tap any other player in the same team to swap them (their roles and positions both trade) — tap the same badge again to cancel. Nothing is recorded until you confirm.</p>`;
   document.getElementById('btnSaveEvent').style.display='';
   document.getElementById('btnExportTeams').style.display='';
   document.getElementById('btnCopyTeams').style.display='';
@@ -1337,10 +1343,12 @@ function renderAssignment(){
 function hideSaveButtons(){ ['btnSaveEvent','btnExportTeams','btnCopyTeams','btnDownloadTeamsPng'].forEach(id=>document.getElementById(id).style.display='none'); }
 
 window.dropMember=(slot,i)=>{
+  evSwapSel=null; // dropping a row shifts every later index in this team out from under any pending selection
   const m=pendingAssignment.teams[slot].splice(i,1)[0];
   pendingAssignment.waitlist.unshift(m); renderAssignment();
 };
 window.removeMember=(slot,i)=>{
+  evSwapSel=null;
   const m=pendingAssignment.teams[slot].splice(i,1)[0];
   apps=apps.filter(a=>norm(a.name)!==norm(m.name));
   renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
@@ -1363,11 +1371,18 @@ window.promoteTo=(i,slot)=>{
   A.waitlist.splice(i,1); A.teams[slot].push(m); renderAssignment();
   toast(`${m.name} added to ${slot==='noon'?'☀️ Noon':'🌙 Evening'}`);
 };
-window.toggleStarter=(slot,i)=>{
-  // swap with boundary member to flip role
-  const A=pendingAssignment, list=A.teams[slot], s=A.starters;
-  if(i<s){ if(list.length>s){ const m=list.splice(i,1)[0]; list.push(m);} }
-  else { const m=list.splice(i,1)[0]; list.splice(Math.min(s-1,list.length),0,m); }
+// Tap a STARTER/SUB badge to select it, then tap any other player in the same
+// team to swap the two of them — position (and so role, which is just "is
+// this index < A.starters") trades between them, everyone else on the team
+// stays exactly where they were. Replaces the old behaviour, which only ever
+// swapped with the starter/sub boundary neighbour regardless of which row you
+// clicked.
+window.evToggleTap=(slot,i)=>{
+  if(evSwapSel&&evSwapSel.slot===slot&&evSwapSel.i===i){ evSwapSel=null; renderAssignment(); return; }
+  if(!evSwapSel||evSwapSel.slot!==slot){ evSwapSel={slot,i}; renderAssignment(); return; }
+  const list=pendingAssignment.teams[slot], j=evSwapSel.i;
+  [list[i],list[j]]=[list[j],list[i]];
+  evSwapSel=null;
   renderAssignment();
 };
 
@@ -2282,7 +2297,7 @@ suppressSave=true; recomputeDerived(); suppressSave=false;
 // Every mutating action goes through this guard, so a viewer can never write
 // even if they craft a click on a hidden control.
 for(const n of ['delApp','setAvail','dropMember','removeMember','removeWait','removeNa','promoteTo',
-  'toggleStarter','setGuar','uiRename','uiMerge','clearBan','uiBan','startBanEdit','saveBanAdjust','delPlayer','resolveReview','removeReview',
+  'evToggleTap','setGuar','uiRename','uiMerge','clearBan','uiBan','startBanEdit','saveBanAdjust','delPlayer','resolveReview','removeReview',
   'markAtt','setBanLen','setAttNote','markAll','applyBans','delEvent','unlockEvent','switchMode',
   'sqAssign','sqMove','sqRename','sqSetCap','sqDelObj','sqAutoFill']){
   const f=window[n];
