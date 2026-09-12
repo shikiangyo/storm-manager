@@ -143,9 +143,9 @@
 
   <div class="panel">
     <h2>2 · Add applications</h2>
-    <p class="help">Import a CSV with columns <code>name, availability</code>, or paste lines like <code>PlayerName, both</code>. Availability must be exactly <code>noon</code>, <code>evening</code>, <code>both</code>, or <code>not available</code> — anything else (typos, blanks) goes to a review list for you to fix. "Not available" players are recorded as having voted but aren't placed in teams; roster players missing from the import entirely are marked "didn't vote" in the history grid. Names not in the roster are added automatically as non-guaranteed. <b>Applicants are placed into teams below immediately</b> — each name appears once, in a team, on the waitlist, or in the banned list. If teams are already formed, you'll be asked whether late additions re-shuffle everyone or just join the waitlist.</p>
+    <p class="help">Import a CSV with columns <code>name, availability</code>, or paste lines like <code>PlayerName, both</code>. Availability must be exactly <code>noon</code>, <code>evening</code>, <code>both</code>, or <code>not available</code> — anything else (typos, blanks) goes to a review list for you to fix. You can also paste (or upload as a file) a raw poll export as-is, in either form the poll tool gives you: the human-readable text summary (a header line, a "N votants" line, then <code>- noon : 27 (31%)</code>-style sections each followed by a comma-separated name list), or the underlying JSON export. Both are detected automatically and the event mode/date are filled in from the header when recognised. <b>Prefer the JSON export when you have it</b> — each voter's exact name comes through with no risk of a mis-split, and its permanent per-player id means Storm Manager can recognise the same player again later even after an in-game name change, without asking you to re-link them. "Not available" players are recorded as having voted but aren't placed in teams; roster players missing from the import entirely are marked "didn't vote" in the history grid. Names not in the roster are added automatically as non-guaranteed. <b>Applicants are placed into teams below immediately</b> — each name appears once, in a team, on the waitlist, or in the banned list. If teams are already formed, you'll be asked whether late additions re-shuffle everyone or just join the waitlist.</p>
     <div class="row">
-      <input type="file" id="csvFile" accept=".csv,.txt">
+      <input type="file" id="csvFile" accept=".csv,.txt,.json">
       <button class="btn ghost" id="btnClearApps">Clear applications</button>
     </div>
     <textarea id="pasteBox" placeholder="Paste applications here, one per line:&#10;DragonSlayer, both&#10;WarKitten, noon&#10;Bob, evening"></textarea>
@@ -451,6 +451,7 @@ function migrate(d){
     p.banCleared=p.banCleared||{desert:null,canyon:null};
     p.banAdjust=p.banAdjust||{desert:null,canyon:null};
     p.banNatural=p.banNatural||{desert:null,canyon:null};
+    if(p.uid===undefined) p.uid=null;
   }
   // ---- Canyon Storm module data (kept apart from the selection data) ----
   d.cs=d.cs||{};
@@ -689,11 +690,58 @@ function resolveKey(name){
     if((db.players[key].aliases||[]).includes(k)) return key;
   return null;
 }
+// A player's in-game uid (when we've been given one — see "applications by uid" below)
+// is a permanent identity, unlike their display name — so it's checked first and, when
+// it matches, wins over name/alias matching even if the name has since changed.
+function resolveKeyByUid(uid){
+  if(!uid) return null;
+  for(const key of Object.keys(db.players)) if(db.players[key].uid===uid) return key;
+  return null;
+}
 function peekPlayer(name){ const k=resolveKey(name); return k?db.players[k]:null; } // read-only: never creates
 function getPlayer(name){
   let k=resolveKey(name);
-  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},lastApplied:{desert:null,canyon:null},lastStarted:{desert:null,canyon:null},banCleared:{desert:null,canyon:null},banAdjust:{desert:null,canyon:null},aliases:[],notes:''}; }
+  if(!k){ k=norm(name); db.players[k]={name:name.trim(),guaranteed:false,banUntil:{desert:null,canyon:null},noShows:0,selections:0,lastSelected:{desert:null,canyon:null},lastApplied:{desert:null,canyon:null},lastStarted:{desert:null,canyon:null},banCleared:{desert:null,canyon:null},banAdjust:{desert:null,canyon:null},aliases:[],notes:'',uid:null}; }
   return db.players[k];
+}
+/* ---------------------------------------------------------------------
+   Resolve (or create) the player record for one applicant, uid-aware.
+   Used by the applications-import pipeline (addAppsObjs/addAppsResolvedObjs)
+   so a JSON poll export's permanent per-voter uid — when we've seen it
+   before — identifies the player even if their in-game display name has
+   changed since, updating the stored name automatically (an "automatic
+   rename", same mechanics as renamePlayer: old name kept as an alias).
+   A uid we haven't seen before falls back to ordinary name/alias matching
+   (exactly what a plain CSV/paste import already does) and, if that finds
+   a match, just quietly learns the uid for next time without touching the
+   name — only a uid-driven match may rename, since a name-only match can
+   go through a stale alias. Plain CSV/paste imports never pass a uid, so
+   this reduces to getPlayer(name)'s existing behaviour for them.
+   --------------------------------------------------------------------- */
+function applicantPlayer(name,uid){
+  uid=uid||null;
+  const byUid=uid?resolveKeyByUid(uid):null;
+  if(byUid){
+    const p=db.players[byUid];
+    // renamePlayer() re-keys db.players (not just p.name) and updates saved-event
+    // history to match — needed so a later lookup by the new name (e.g. runAssign
+    // placing this applicant into a team) finds this same record instead of
+    // silently creating a duplicate under the new name. On the rare case of a
+    // collision with a different existing player, renamePlayer() is a no-op and
+    // this record just keeps its current name — the uid still identifies it
+    // correctly for this import either way.
+    if(norm(p.name)!==norm(name)) renamePlayer(byUid,name.trim());
+    return p;
+  }
+  const byName=resolveKey(name);
+  if(byName){
+    const p=db.players[byName];
+    if(uid && !p.uid) p.uid=uid;
+    return p;
+  }
+  const np=getPlayer(name);
+  if(uid) np.uid=uid;
+  return np;
 }
 function renamePlayer(oldKey,newName){
   newName=newName.trim();
@@ -719,6 +767,7 @@ function mergePlayers(targetKey,sourceKey){
   const t=db.players[targetKey], s=db.players[sourceKey];
   if(!t||!s) return 'Player not found';
   // combine history
+  t.uid = t.uid || s.uid; // keep whichever record already has a known uid
   t.guaranteed = t.guaranteed || s.guaranteed;
   t.selections += s.selections;
   t.noShows += s.noShows;
@@ -782,20 +831,138 @@ function parseAvail(s){
   if(s==='not available'||s==='notavailable'||s==='n/a'||s==='na') return 'na';
   return null; // anything else must be reviewed by an officer
 }
+/* ---------------------------------------------------------------------
+   Alternate paste format: a raw poll-export summary, e.g.
+
+     Desert Storm - Friday 11th September
+     86 votants
+     - noon : 27 (31%)
+         SpamSolo, DoomsdayX, ...
+     - evening : 24 (28%)
+         WacoKid, Badgers79, ...
+     - both : 30 (35%)
+         Yokko, FOX UA, ...
+     - not available : 5 (6%)
+         PhantomRainB27, Henqq, ...
+
+   parsePollSummary() detects this shape and turns it into the same
+   "Name, avail" line list addApps() already knows how to consume — so all
+   the existing alias-resolution / dedupe / review-queue logic is reused
+   unchanged. Returns null (not this format) when no recognised section
+   header is found, so callers can fall back to the plain CSV/paste path.
+   --------------------------------------------------------------------- */
+const POLL_SECTION_RE=/^-\s*([a-zA-Z][a-zA-Z /]*?)\s*:\s*\d+/;
+const POLL_AVAIL_MAP={noon:'noon',evening:'evening',both:'both',either:'both',
+  'not available':'not available','notavailable':'not available','n/a':'not available',
+  na:'not available',unavailable:'not available'};
+// Shared by both poll-format parsers below: pulls the event mode and date out of
+// whatever free-text header line/question comes with the poll ("Desert Storm -
+// Friday 11th September"). Assumes the current year since neither format states one.
+function parsePollHeaderMeta(header){
+  header=String(header||'');
+  let mode=null,date=null;
+  if(/\bdesert\s*storm\b/i.test(header)) mode='desert';
+  else if(/\bcanyon\s*storm\b/i.test(header)) mode='canyon';
+  const dm=header.match(/(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)/);
+  if(dm){
+    const months=['january','february','march','april','may','june','july','august','september','october','november','december'];
+    let mi=months.findIndex(m=>m===dm[2].toLowerCase());
+    if(mi<0) mi=months.findIndex(m=>m.startsWith(dm[2].toLowerCase().slice(0,3)));
+    if(mi>=0){
+      const day=parseInt(dm[1],10);
+      const year=new Date().getFullYear();
+      date=`${year}-${String(mi+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    }
+  }
+  return {mode,date};
+}
+function parsePollSummary(text){
+  const rawLines=String(text).split(/\r?\n/).map(l=>l.trim());
+  const isVotants=l=>/^\d+\s*votants?\b/i.test(l);
+  const hasSection=rawLines.some(l=>POLL_SECTION_RE.test(l));
+  if(!hasSection) return null; // not this format — let the caller fall back
+
+  const headerLine=rawLines.find(l=>l && !isVotants(l) && !POLL_SECTION_RE.test(l));
+  const {mode,date}=parsePollHeaderMeta(headerLine);
+
+  const lines=[];
+  let currentAvail=null;
+  for(const l of rawLines){
+    if(!l || l===headerLine || isVotants(l)) continue;
+    const m=l.match(POLL_SECTION_RE);
+    if(m){
+      const label=norm(m[1]);
+      currentAvail=POLL_AVAIL_MAP[label]!==undefined?POLL_AVAIL_MAP[label]:m[1].trim(); // unrecognised label passed through so it lands in the review queue instead of being silently dropped
+      continue;
+    }
+    if(!currentAvail) continue; // stray text before the first section header
+    for(const n of l.split(',').map(x=>x.trim()).filter(Boolean)) lines.push(`${n}, ${currentAvail}`);
+  }
+  return {lines,mode,date};
+}
+/* ---------------------------------------------------------------------
+   The same poll, but as the raw JSON export (voteId/question/options/voters)
+   rather than the human-readable text summary — CS Commander and similar
+   tools can export either. Preferred over the text summary when available:
+   each voter carries a permanent `uid` (their in-game account id), which
+   — unlike their display name — never changes, so once Storm Manager has
+   seen a player's uid it can recognise them again even through a rename,
+   with no manual "which existing player is this?" prompt. It also gives
+   exact names (no comma-splitting or line-wrap risk from a pasted list).
+   Returns {items:[{name,avail,uid}], mode, date} — a different shape from
+   parsePollSummary's {lines}, since these carry structured uid data through
+   to addAppsObjs() rather than being flattened into "Name, avail" text.
+   --------------------------------------------------------------------- */
+function parsePollJSON(text){
+  let data;
+  try{ data=JSON.parse(text); }catch(e){ return null; }
+  if(!data||typeof data!=='object'||!Array.isArray(data.options)||!data.voters||typeof data.voters!=='object') return null;
+
+  const {mode,date}=parsePollHeaderMeta(data.question);
+  const items=[];
+  for(const opt of data.options){
+    if(!opt) continue;
+    const label=norm(opt.text||'');
+    const avail=POLL_AVAIL_MAP[label]!==undefined?POLL_AVAIL_MAP[label]:String(opt.text||'').trim();
+    const voters=data.voters[String(opt.itemId)]||[];
+    if(!Array.isArray(voters)) continue;
+    for(const v of voters){
+      if(!v||!v.name) continue;
+      items.push({name:String(v.name),avail,uid:v.uid?String(v.uid):null});
+    }
+  }
+  if(!items.length) return null;
+  return {items,mode,date};
+}
+function applyPollImport(poll){
+  if(poll.mode){ document.getElementById('evMode').value=poll.mode; updateModeChip(); updateCanyonSplitVisibility(); }
+  if(poll.date) document.getElementById('evDate').value=poll.date;
+  if(poll.items) addAppsObjs(poll.items); else addApps(poll.lines);
+}
 function addAppsResolved(lines){
-  let added=0,dupes=0,reviewed=0; const fresh=[];
+  // back-compat entry point (plain CSV/paste text, no uid): parse "Name, avail"
+  // lines into objects and delegate to the uid-aware version below.
+  const items=[];
   for(const line of lines){
-    const parts=line.split(/[,;\t]/)
+    const parts=String(line).split(/[,;\t]/)
                     .map(x=>x.trim().replace(/^["']+|["']+$/g,'').trim())
                     .filter(Boolean);
     if(!parts.length) continue;
     const name=parts[0];
     if(/^name$/i.test(name)) continue; // header row
-    const avail=parseAvail(parts[1]);
-    const p=getPlayer(name); // resolves former names to the current player
+    items.push({name,avail:parts[1]||'',uid:null});
+  }
+  addAppsResolvedObjs(items);
+}
+function addAppsResolvedObjs(items){
+  let added=0,dupes=0,reviewed=0; const fresh=[];
+  for(const it of items){
+    const name=it.name; if(!name) continue;
+    const avail=parseAvail(it.avail);
+    const p=applicantPlayer(name,it.uid); // resolves former names (and, when given a uid, a renamed player) to the current record
     if(apps.some(a=>norm(a.name)===norm(p.name))){dupes++;continue;}
     if(avail===null){
-      if(!review.some(r=>norm(r.name)===norm(p.name))){ review.push({name:p.name,raw:parts[1]||'(blank)'}); reviewed++; }
+      if(!review.some(r=>norm(r.name)===norm(p.name))){ review.push({name:p.name,raw:it.avail||'(blank)'}); reviewed++; }
       continue;
     }
     review=review.filter(r=>norm(r.name)!==norm(p.name)); // valid value supersedes review entry
@@ -822,8 +989,8 @@ function addAppsResolved(lines){
    spelling as an alias, so it matches automatically next time), or add
    them as a genuinely new player.
    --------------------------------------------------------------------- */
-let evLinkQueue = [];      // [{name, avail}] awaiting a decision
-let evLinkKnown = [];      // already-resolved lines held back until we're done
+let evLinkQueue = [];      // [{name, avail, uid}] awaiting a decision
+let evLinkKnown = [];      // already-resolved items held back until we're done
 
 function addApps(lines){
   const parsed = [];
@@ -833,14 +1000,26 @@ function addApps(lines){
         .filter(Boolean);
     if (!parts.length) continue;
     if (/^name$/i.test(parts[0])) continue;
-    parsed.push({ name: parts[0], avail: parts[1] || '' });
+    parsed.push({ name: parts[0], avail: parts[1] || '', uid: null });
   }
   if (!parsed.length){ addAppsResolved(lines); return; }
-
+  addAppsObjs(parsed);
+}
+/* ---------------------------------------------------------------------
+   Same idea as addApps() above, but for structured {name, avail, uid}
+   items rather than raw text lines — used by the JSON poll-export import,
+   which already has clean per-voter objects and a permanent uid per voter
+   that's worth routing through uid-aware matching (resolveKeyByUid via
+   applicantPlayer) rather than round-tripping through comma-joined text.
+   Plain CSV/paste still goes through addApps()/addAppsResolved() above,
+   which simply pass uid:null through here — identical behaviour to before
+   this existed.
+   --------------------------------------------------------------------- */
+function addAppsObjs(items){
   const known = [], unknown = [];
-  for (const p of parsed) (resolveKey(p.name) ? known : unknown).push(p);
+  for (const it of items) ((it.uid?resolveKeyByUid(it.uid):null) || resolveKey(it.name) ? known : unknown).push(it);
 
-  if (!unknown.length){ addAppsResolved(parsed.map(p=>`${p.name}, ${p.avail}`)); return; }
+  if (!unknown.length){ addAppsResolvedObjs(known); return; }
 
   evLinkKnown = known;
   evLinkQueue = unknown;
@@ -857,9 +1036,9 @@ function evSuggest(name){
 
 function evFinishLink(){
   const wrap=document.querySelector('.modal.evlink'); if(wrap) wrap.remove();
-  const lines = evLinkKnown.map(p=>`${p.name}, ${p.avail}`);
+  const items = evLinkKnown;
   evLinkKnown = []; evLinkQueue = [];
-  if (lines.length) addAppsResolved(lines);
+  if (items.length) addAppsResolvedObjs(items);
   else { renderApps(); renderReview(); toast('Nothing added','err'); }
 }
 
@@ -914,7 +1093,8 @@ function evRenderLink(){
         p.aliases=p.aliases||[];
         const k=norm(item.name);
         if(norm(p.name)!==k && !p.aliases.includes(k)) p.aliases.push(k);
-        evLinkKnown.push({ name:p.name, avail:item.avail });
+        if(item.uid && !p.uid) p.uid=item.uid; // learn this player's uid so future imports skip this dialog for them
+        evLinkKnown.push({ name:p.name, avail:item.avail, uid:item.uid||p.uid||null });
       }
       evLinkQueue=evLinkQueue.filter(q=>q!==item);
       save(); evRenderLink();
@@ -1013,12 +1193,20 @@ function lateWaitlist(fresh){
 document.getElementById('csvFile').onchange=e=>{
   const f=e.target.files[0]; if(!f)return;
   const r=new FileReader();
-  r.onload=()=>{ addApps(r.result.split(/\r?\n/)); e.target.value=''; };
+  r.onload=()=>{
+    const text=r.result;
+    const poll=parsePollJSON(text)||parsePollSummary(text);
+    if(poll) applyPollImport(poll); else addApps(text.split(/\r?\n/));
+    e.target.value='';
+  };
   r.readAsText(f);
 };
 document.getElementById('btnParsePaste').onclick=()=>{
   const box=document.getElementById('pasteBox');
-  addApps(box.value.split(/\r?\n/)); box.value='';
+  const text=box.value;
+  const poll=parsePollJSON(text)||parsePollSummary(text);
+  if(poll) applyPollImport(poll); else addApps(text.split(/\r?\n/));
+  box.value='';
 };
 document.getElementById('btnClearApps').onclick=()=>{ apps=[]; review=[]; pendingAssignment=null; renderApps(); renderReview(); document.getElementById('assignResult').innerHTML=''; hideSaveButtons(); };
 
