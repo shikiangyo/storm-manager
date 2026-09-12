@@ -1161,6 +1161,58 @@ function rosterPicker(opts){
   return wrap;
 }
 
+// Same idea as rosterPicker() above, but browses db.cs.roster (id-keyed CS
+// records) instead of db.players (name-keyed main roster) — used by the Storm
+// Players tab's "merge a duplicate" flow. Named csMergePicker (not
+// csRosterPicker) to avoid colliding with the pre-existing csRosterPicker(forName,
+// pool, onPick) used by the Storm Build "link names" dialog further down this
+// file — two top-level function declarations sharing a name silently overwrite
+// each other, which is exactly what happened here until this was caught by
+// testing (Storm Build's link dialog broke: "pool is not iterable").
+function csMergePicker(opts){
+  const { onPick, exclude, title } = opts || {};
+  const skip = new Set(exclude || []);
+  const wrap = document.createElement('div');
+  wrap.className = 'modal rosterpick';
+  wrap.innerHTML = `<div class="box" style="width:min(520px,94vw);max-height:88vh;display:flex;flex-direction:column">
+    <h3 style="margin-top:0">${csEsc(title || 'Choose a CS record')}</h3>
+    <input type="text" id="cpFilter" placeholder="Type to narrow the list (optional)" style="width:100%">
+    <div id="cpList" style="overflow:auto;margin-top:10px;flex:1;min-height:180px"></div>
+    <div class="row" style="margin:12px 0 0"><button class="btn ghost" id="cpX">Cancel</button>
+      <span class="muted" id="cpCount"></span></div></div>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.onclick = e => { if (e.target === wrap) close(); };
+  wrap.querySelector('#cpX').onclick = close;
+
+  const all = db.cs.roster
+    .filter(p => !skip.has(p.id))
+    .sort((a,b)=>a.name.localeCompare(b.name, undefined, {sensitivity:'base'}));
+
+  const list = wrap.querySelector('#cpList');
+  const count = wrap.querySelector('#cpCount');
+  const draw = q => {
+    const shown = q ? all.filter(p => norm(p.name).includes(q)
+                                   || (p.aliases||[]).some(a=>a.includes(q))) : all;
+    count.textContent = `${shown.length} of ${all.length}`;
+    list.innerHTML = shown.length
+      ? shown.map(p=>`<button class="btn ghost" data-id="${csEsc(p.id)}"
+           style="display:block;width:100%;text-align:left;margin-bottom:4px">
+           ${csEsc(p.name)}${p.power?` <span class="muted" style="font-size:11px">(${p.power.toLocaleString()})</span>`:''}${(p.aliases||[]).length?`<span class="muted" style="font-size:11px"> · also ${p.aliases.map(csEsc).join(', ')}</span>`:''}
+         </button>`).join('')
+      : '<p class="help">Nobody matches that.</p>';
+    list.querySelectorAll('[data-id]').forEach(b=>b.onclick=()=>{
+      const p = db.cs.roster.find(x=>x.id===b.dataset.id);
+      close();
+      if (p && onPick) onPick(p);
+    });
+  };
+  draw('');
+  const f = wrap.querySelector('#cpFilter');
+  f.oninput = () => draw(norm(f.value));
+  return wrap;
+}
+
 function renderReview(){
   const el=document.getElementById('reviewList');
   if(!review.length){ el.innerHTML=''; return; }
@@ -2697,6 +2749,43 @@ function csFindByUid(uid){
   return db.cs.roster.find(x=>x.uid===uid)||null;
 }
 
+// Merge two CS roster records that turned out to be the same person — e.g. a THP
+// CSV or a plain CSV import created a fresh record because the name didn't match
+// an existing one exactly (a case/spacing difference, an in-game rename before a
+// uid was ever recorded, etc). Mirrors mergePlayers() above (same idea: fold the
+// useful fields into the record being kept, then discard the duplicate) but for
+// db.cs.roster instead of db.players — a separate function because the two
+// rosters are separate arrays with separate ids, and combat attributes combine
+// differently to fairness/attendance history.
+function csMergePlayers(targetId,sourceId){
+  if(targetId===sourceId) return 'Cannot merge a CS record with itself';
+  const t=db.cs.roster.find(x=>x.id===targetId), s=db.cs.roster.find(x=>x.id===sourceId);
+  if(!t||!s) return 'CS record not found';
+  t.uid = t.uid || s.uid;           // permanent in-game id — keep whichever side already has it
+  t.dsRank = t.dsRank || s.dsRank;  // null means "never set" on both fields, so this is safe
+  // Power: prefer whichever reading was synced more recently (an automated THP
+  // source beats a stale one); if neither side has a synced timestamp, just fill
+  // in a missing power from the other side rather than leaving it unset.
+  if(s.powerSyncedAt && (!t.powerSyncedAt || s.powerSyncedAt>t.powerSyncedAt)){
+    t.power=s.power; t.powerSyncedAt=s.powerSyncedAt; t.powerSource=s.powerSource;
+  } else if(!t.power && s.power){
+    t.power=s.power; t.powerSource=t.powerSource||s.powerSource; t.powerSyncedAt=t.powerSyncedAt||s.powerSyncedAt;
+  }
+  // duplicate's name + its aliases become aliases of the kept record, so a future
+  // import under either spelling still matches (same convention as mergePlayers())
+  t.aliases=t.aliases||[];
+  for(const a of [norm(s.name),...(s.aliases||[])])
+    if(a!==norm(t.name) && !t.aliases.includes(a)) t.aliases.push(a);
+  // sub-rotation history is keyed by CS record id, not name — carry the more
+  // recent sub date across to the surviving id so "weakest overall" pairing
+  // doesn't forget this player just subbed
+  if(db.cs.lastsub[sourceId] && (!db.cs.lastsub[targetId] || db.cs.lastsub[sourceId]>db.cs.lastsub[targetId]))
+    db.cs.lastsub[targetId]=db.cs.lastsub[sourceId];
+  delete db.cs.lastsub[sourceId];
+  db.cs.roster=db.cs.roster.filter(x=>x.id!==sourceId);
+  save(); return null;
+}
+
 /* ---- fuzzy name matching (ported from CS Commander) ------------------ */
 function csLev(a,b){
   a=a.toLowerCase(); b=b.toLowerCase();
@@ -2725,6 +2814,20 @@ function csSuggest(name,pool,n){
              .sort((a,b)=>b.s-a.s)
              .filter(r=>r.s>=0.45)
              .slice(0,n||3);
+}
+// Flags pairs of CS roster records that are probably the same person under a
+// slightly different spelling (a case difference, a stray space, a rename an
+// import's matching missed) — surfaced as a "Possible duplicates" banner on the
+// Storm Players tab so they're easy to spot and merge rather than silently
+// double-counting someone. Threshold is stricter than csSuggest's (0.6 vs 0.45)
+// since this runs unprompted against the whole roster (O(n^2) pairs) rather than
+// against one specific typed name, so it needs to stay quiet on genuinely
+// different short names.
+function csDuplicateSuggestions(){
+  const all=db.cs.roster, out=[];
+  for(let i=0;i<all.length;i++) for(let j=i+1;j<all.length;j++)
+    if(csSimilar(all[i].name,all[j].name)>=0.6) out.push([all[i],all[j]]);
+  return out;
 }
 function csAttrs(name){
   const p=csFind(name);
@@ -3349,6 +3452,7 @@ function renderCsPlayers(){
   const all=[...db.cs.roster].sort((a,b)=>b.power-a.power);
   const shown=q?all.filter(p=>norm(p.name).includes(q)):all;
   const inRoster=n=>!!resolveKey(n);
+  const dupes=csDuplicateSuggestions();
 
   document.getElementById('csStats').innerHTML=`
     <div class="stat"><div class="n">${all.length}</div><div class="l">CS records</div></div>
@@ -3356,7 +3460,16 @@ function renderCsPlayers(){
     <div class="stat"><div class="n">${all.filter(p=>p.ptype==='Roamer').length}</div><div class="l">Roamers</div></div>
     <div class="stat"><div class="n">${all.filter(p=>!inRoster(p.name)).length}</div><div class="l">Not on main roster</div></div>`;
 
-  wrap.innerHTML=`<table><thead><tr><th>Name</th><th>Power</th><th>T1 type</th><th>Player type</th><th class="admin-only">DS Ranking</th><th></th></tr></thead><tbody>${
+  const dupesHtml=dupes.length?`<div class="help admin-only" style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:10px">
+    <b>⚠ Possible duplicates</b> — these look like the same person under slightly different spellings:
+    ${dupes.map(([a,b])=>`<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span>${csEsc(a.name)}</span><span class="muted">↔</span><span>${csEsc(b.name)}</span>
+      <button class="mini" onclick="csConfirmMerge('${a.id}','${b.id}')">Merge into "${csEsc(a.name)}"</button>
+      <button class="mini" onclick="csConfirmMerge('${b.id}','${a.id}')">Merge into "${csEsc(b.name)}"</button>
+    </div>`).join('')}
+  </div>`:'';
+
+  wrap.innerHTML=`${dupesHtml}<table><thead><tr><th>Name</th><th>Power</th><th>T1 type</th><th>Player type</th><th class="admin-only">DS Ranking</th><th></th></tr></thead><tbody>${
     shown.map(p=>`<tr>
       <td><b>${csEsc(p.name)}</b>${inRoster(p.name)?'':' <span class="badge b-ban" title="No matching player on the Roster tab">not on roster</span>'}
         ${(p.aliases||[]).length?`<div class="muted" style="font-size:11px">also: ${p.aliases.map(a=>
@@ -3370,6 +3483,7 @@ function renderCsPlayers(){
       </select></td>
       <td style="text-align:right" class="admin-only">
         <button class="mini" onclick="csEdit('${p.id}')">✏️</button>
+        <button class="mini" title="Merge a duplicate CS record into this one" onclick="csUiMerge('${p.id}')">🔀</button>
         <button class="mini" onclick="csDelete('${p.id}')">🗑</button></td>
     </tr>`).join('')||'<tr><td colspan="6" class="muted">No CS records yet.</td></tr>'
   }</tbody></table>`;
@@ -3434,6 +3548,85 @@ window.csDelete=id=>{
     db.cs.roster=db.cs.roster.filter(x=>x.id!==id);
     save(); wrap.remove(); renderCsPlayers(); toast('Removed');
   };
+};
+
+// Shows the "merge X into Y?" confirmation with a field-by-field comparison,
+// then does the merge. Shared by the duplicate-suggestions banner's one-click
+// buttons and the "merge a duplicate" picker flow below.
+window.csConfirmMerge=(targetId,sourceId)=>{
+  const t=db.cs.roster.find(x=>x.id===targetId), s=db.cs.roster.find(x=>x.id===sourceId);
+  if(!t||!s) return;
+  const conf=document.createElement('div'); conf.className='modal';
+  conf.innerHTML=`<div class="box"><h3>Merge ${csEsc(s.name)} into ${csEsc(t.name)}?</h3>
+    <p class="help"><b>${csEsc(t.name)}</b> keeps the combined record and gains
+      "${csEsc(s.name)}" as a linked name, so a future import under either spelling still
+      matches. <b>${csEsc(s.name)}</b>'s CS record is then removed. This does not touch
+      either player's main Roster tab entry, attendance history or bans.</p>
+    <table style="margin:8px 0"><tr><th></th><th>${csEsc(t.name)}</th><th>${csEsc(s.name)}</th></tr>
+      <tr><td class="muted">Power</td><td>${t.power?t.power.toLocaleString():'— not set'}</td><td>${s.power?s.power.toLocaleString():'— not set'}</td></tr>
+      <tr><td class="muted">T1 type</td><td>${csEsc(t.t1)}</td><td>${csEsc(s.t1)}</td></tr>
+      <tr><td class="muted">Player type</td><td>${csEsc(t.ptype)}</td><td>${csEsc(s.ptype)}</td></tr>
+      <tr><td class="muted">DS Ranking</td><td>${t.dsRank||'— unranked —'}</td><td>${s.dsRank||'— unranked —'}</td></tr>
+    </table>
+    <p class="help">Power keeps whichever reading was synced most recently (or fills in a
+      missing one); DS Ranking and the linked in-game uid keep whichever side already has
+      one. T1 type and Player type keep ${csEsc(t.name)}'s current values — worth
+      double-checking those after merging.</p>
+    <div class="row" style="margin:12px 0 0"><button class="btn warn" id="cmY">Merge</button>
+    <button class="btn ghost" id="cmN">Cancel</button></div></div>`;
+  document.body.appendChild(conf);
+  conf.querySelector('#cmN').onclick=()=>conf.remove();
+  conf.querySelector('#cmY').onclick=()=>{
+    const err=csMergePlayers(targetId,sourceId);
+    conf.remove();
+    if(err){ toast(err,'err'); return; }
+    renderCsPlayers(); toast(`${s.name} merged into ${t.name}`);
+  };
+};
+
+window.csUiMerge=id=>{
+  const t=db.cs.roster.find(x=>x.id===id); if(!t) return;
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box" style="width:min(520px,94vw)">
+    <h3>Merge a duplicate into ${csEsc(t.name)}</h3>
+    <p class="help">The duplicate's Power, T1 type, DS Ranking and linked uid are folded into
+      <b>${csEsc(t.name)}</b> (see the next step for exactly how each field is decided), and
+      the duplicate's name becomes a linked name. The duplicate's CS record is then removed —
+      this doesn't touch the main Roster tab.</p>
+    <label class="muted" style="font-size:12px">Type the duplicate's name</label>
+    <input id="cmName" placeholder="e.g. an old spelling of their name">
+    <div class="row" style="margin:10px 0 0">
+      <button class="btn" id="cmGo">Merge that name</button>
+      <span class="muted">or</span>
+      <button class="btn ghost" id="cmBrowse">📋 Pick from the list…</button>
+    </div>
+    <p class="help">Use the list if their name has characters you can't type.</p>
+    <div class="row" style="margin:10px 0 0"><button class="btn ghost" id="cmX">Cancel</button></div></div>`;
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{ if(e.target===wrap) close(); };
+  wrap.querySelector('#cmX').onclick=close;
+
+  const doMerge=sid=>{
+    if(sid===id){ toast('That is the same CS record','err'); return; }
+    close();
+    csConfirmMerge(id,sid);
+  };
+
+  wrap.querySelector('#cmGo').onclick=()=>{
+    const typed=wrap.querySelector('#cmName').value.trim();
+    const nn=norm(typed);
+    if(!nn){ toast('Type a name, or pick from the list','err'); return; }
+    const found=db.cs.roster.find(x=>x.id!==id && (norm(x.name)===nn || (x.aliases||[]).some(a=>norm(a)===nn)));
+    if(!found){ toast(`No CS record called "${typed}" found`,'err'); return; }
+    doMerge(found.id);
+  };
+  wrap.querySelector('#cmBrowse').onclick=()=>csMergePicker({
+    title:`Merge who into ${t.name}?`,
+    exclude:[id],
+    onPick:p=>doMerge(p.id)
+  });
+  wrap.querySelector('#cmName').focus();
 };
 
 window.csPullRoster=()=>{
