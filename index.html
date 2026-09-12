@@ -315,7 +315,7 @@
       <input type="text" id="csSearch" placeholder="🔍 Search…" style="margin-left:auto">
     </div>
     <p class="help">CSV columns: <code>name, power, t1, playertype</code> — the last two are optional and default to Tank / Holder. Names not already on this list are added; existing ones are skipped.
-      <br>The same button also accepts a THP export CSV with a header row including <code>player_uid, hero_total_power, apex_hero_name</code> (Pete's own alliance-tracking tool) — detected automatically. That format works the other way round: it only <b>updates</b> players already on this list (a name it doesn't recognise is reported, not added), matching by the player's permanent in-game id once known so a later import still finds them after a rename, writing <code>hero_total_power</code> into <b>Power</b> above (a "CSV" badge marks it, same idea as the "KT" badge), and setting <b>T1</b> from their strongest hero (DVA → Aircraft, Tesla → Missile, Kimberly → Tank; anything else leaves T1 as it was).</p>
+      <br>The same button also accepts a THP export CSV with a header row including <code>player_uid, hero_total_power, apex_hero_name, alliance_abbr</code> (Pete's own alliance-tracking tool) — detected automatically. That format matches by the player's permanent in-game id once known (falling back to name, so a later import still finds them after a rename), writing <code>hero_total_power</code> into <b>Power</b> above (a "CSV" badge marks it, same idea as the "KT" badge) and setting <b>T1</b> from their strongest hero (DVA → Aircraft, Tesla → Missile, Kimberly → Tank; anything else leaves T1 as it was on an update). A row that already matches someone on this list is always updated, whatever alliance it's tagged with; a row that doesn't match anyone is only <b>added</b> as a new record when it's tagged <code>1GN</code> — everyone else's unmatched rows (allies/enemies the export also lists) are ignored.</p>
     <div id="csRosterTable"></div>
   </div>
 </section>
@@ -4050,51 +4050,69 @@ function csvParseLine(line){
   return cells.map(c=>c.trim());
 }
 /* ---------------------------------------------------------------------
-   Update-only import of a THP export CSV (columns include player_uid,
-   hero_total_power, apex_hero_name \u2014 Pete's own alliance-tracking tool,
-   an alternative to the "Sync THP from Kill Tracker" button above): unlike
-   the plain name/power/t1/type CSV below, which only ever ADDS players not
-   already on the CS roster, this only ever UPDATES existing records \u2014 same
-   convention as the Kill Tracker sync, and for the same reason: a name this
-   file doesn't recognise as a Storm Player yet is reported, not guessed at.
-   - `player_uid` is stored on the matched record (once known, later imports
-     match by uid first \u2014 same idea as db.players[key].uid, see
-     applicantPlayer() \u2014 so it survives a later in-game rename).
+   Import of a THP export CSV (columns include player_uid, hero_total_power,
+   apex_hero_name, alliance_abbr \u2014 Pete's own alliance-tracking tool, an
+   alternative to the "Sync THP from Kill Tracker" button above). The file
+   covers Pete's own alliance plus allies/enemies his tool also tracks, so
+   this is deliberately NOT a blanket update-or-add:
+   - a row that MATCHES an existing Storm Player (by uid, or by name/alias
+     via csFind()) is always updated, whatever alliance it's tagged with \u2014
+     Pete already chose to track that person, so a THP refresh for them is
+     always welcome.
+   - a row that doesn't match anyone yet is only ADDED as a brand-new Storm
+     Player when its `alliance_abbr` is CS_HOME_ALLIANCE (Pete's own tag,
+     "1GN" \u2014 change the constant below if that ever changes); everyone
+     else's unmatched rows (allies/enemies not yet tracked here) are just
+     ignored, on request \u2014 this file is not "add anyone in it".
+   - `player_uid` is stored on every matched/added record (once known,
+     later imports match by uid first \u2014 same idea as db.players[key].uid,
+     see applicantPlayer() \u2014 so it survives a later in-game rename).
    - `hero_total_power` (NOT the CSV's own `power` column, which is the raw
-     game Power stat) overwrites the roster's `power` field, since Power was
+     game Power stat) sets the roster's `power` field, since Power was
      already repurposed to mean THP by the Kill Tracker sync above.
    - `apex_hero_name` sets T1 by substring: DVA -> Aircraft, Tesla ->
-     Missile, Kimberly -> Tank; anything else leaves T1 untouched (Pete's
-     instruction \u2014 better to leave it alone than guess).
+     Missile, Kimberly -> Tank; anything else leaves T1 untouched on an
+     update, or defaults to 'Tank' on a brand-new add (Pete's instruction
+     for updates \u2014 better to leave it alone than guess; a new record has
+     no prior value to protect, so it gets the same "Tank" default as the
+     plain CSV/"+ Add CS record" paths use when T1 is unknown).
    --------------------------------------------------------------------- */
 const THP_CSV_HERO_T1={dva:'Aircraft',tesla:'Missile',kimberly:'Tank'};
+const CS_HOME_ALLIANCE='1GN'; // Pete's own alliance tag \u2014 see note above
 function csImportThpCsv(rows){
   const header=rows[0].map(h=>norm(h));
   const iName=header.indexOf('player_name')>=0?header.indexOf('player_name'):header.indexOf('name');
   const iUid=header.indexOf('player_uid');
   const iThp=header.indexOf('hero_total_power');
   const iHero=header.indexOf('apex_hero_name');
+  const iAlliance=header.indexOf('alliance_abbr');
   const now=new Date().toISOString();
-  let updated=0; const unmatched=[];
+  let updated=0,added=0; const ignored=[];
   for(let r=1;r<rows.length;r++){
     const c=rows[r]; if(!c||!c[iName]) continue;
     const name=c[iName].trim(); if(!name) continue;
     const uid=(iUid>=0?c[iUid]:'').trim()||null;
     const thp=iThp>=0&&c[iThp]!==''?Math.round(parseFloat(c[iThp]))||0:null;
+    const alliance=(iAlliance>=0?c[iAlliance]:'').trim();
     const heroRaw=(iHero>=0?c[iHero]:'').trim().toLowerCase();
     let t1=null;
     for(const k of Object.keys(THP_CSV_HERO_T1)) if(heroRaw.includes(k)){ t1=THP_CSV_HERO_T1[k]; break; }
 
-    const rec=(uid&&csFindByUid(uid))||csFind(name);
-    if(!rec){ unmatched.push(name); continue; }
+    let rec=(uid&&csFindByUid(uid))||csFind(name);
+    let isNew=false;
+    if(!rec){
+      if(norm(alliance)!==norm(CS_HOME_ALLIANCE)){ ignored.push(`${name} (${alliance||'no alliance'})`); continue; }
+      rec={id:csUid(),name,power:0,t1:t1||'Tank',ptype:'Holder',aliases:[],dsRank:null,uid:null};
+      db.cs.roster.push(rec);
+      isNew=true; added++;
+    } else updated++;
     if(uid&&!rec.uid) rec.uid=uid;
     if(thp!=null){ rec.power=thp; rec.powerSyncedAt=now; rec.powerSource='csv'; }
-    if(t1) rec.t1=t1;
-    updated++;
+    if(t1&&!isNew) rec.t1=t1; // a new add already got t1 (or the 'Tank' default) above; an existing record only changes T1 when a hero type was actually recognised
   }
   save(); renderCsPlayers();
-  toast(`THP CSV: ${updated} updated${unmatched.length?`, ${unmatched.length} not matched (not on Storm Players yet) \u2014 see console`:''}`);
-  if(unmatched.length) console.log('THP CSV \u2014 not matched to an existing Storm Player:',unmatched);
+  toast(`THP CSV: ${updated} updated, ${added} added (${CS_HOME_ALLIANCE})${ignored.length?`, ${ignored.length} other-alliance rows ignored \u2014 see console`:''}`);
+  if(ignored.length) console.log('THP CSV \u2014 ignored (not already tracked, and not '+CS_HOME_ALLIANCE+'):',ignored);
 }
 document.getElementById('csImport').onchange=e=>{
   const f=e.target.files[0]; if(!f) return;
