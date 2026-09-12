@@ -306,7 +306,7 @@
       it doesn't add a separate field, it replaces this number, so everything that already uses Power (snake draft,
       side-strength, sub pairing) picks it up automatically. A "KT" badge next to Power marks a value that came from
       that sync, and when it last ran; anyone not yet synced (or not matched by name) keeps their existing Power
-      untouched.</p>
+      untouched. Prefer a CSV export instead? The <b>Import CSV</b> button below also accepts one — see its help text.</p>
     <div class="row">
       <button class="btn" id="csAdd">+ Add CS record</button>
       <label id="csImportLabel">Import CSV <input type="file" id="csImport" accept=".csv,.txt"></label>
@@ -314,7 +314,8 @@
       <button class="btn ghost admin-only" id="csSyncThp" onclick="syncThpFromKillTracker()" style="display:none" title="Overwrites Power with each player's Total Hero Power from Kill Tracker">🔄 Sync THP from Kill Tracker</button>
       <input type="text" id="csSearch" placeholder="🔍 Search…" style="margin-left:auto">
     </div>
-    <p class="help">CSV columns: <code>name, power, t1, playertype</code> — the last two are optional and default to Tank / Holder.</p>
+    <p class="help">CSV columns: <code>name, power, t1, playertype</code> — the last two are optional and default to Tank / Holder. Names not already on this list are added; existing ones are skipped.
+      <br>The same button also accepts a THP export CSV with a header row including <code>player_uid, hero_total_power, apex_hero_name</code> (Pete's own alliance-tracking tool) — detected automatically. That format works the other way round: it only <b>updates</b> players already on this list (a name it doesn't recognise is reported, not added), matching by the player's permanent in-game id once known so a later import still finds them after a rename, writing <code>hero_total_power</code> into <b>Power</b> above (a "CSV" badge marks it, same idea as the "KT" badge), and setting <b>T1</b> from their strongest hero (DVA → Aircraft, Tesla → Missile, Kimberly → Tank; anything else leaves T1 as it was).</p>
     <div id="csRosterTable"></div>
   </div>
 </section>
@@ -456,7 +457,7 @@ function migrate(d){
   // ---- Canyon Storm module data (kept apart from the selection data) ----
   d.cs=d.cs||{};
   d.cs.roster=d.cs.roster||CS_SEED.map(p=>({...p}));
-  d.cs.roster.forEach(p=>{ if(!Array.isArray(p.aliases)) p.aliases=[]; if(p.dsRank===undefined) p.dsRank=null; });
+  d.cs.roster.forEach(p=>{ if(!Array.isArray(p.aliases)) p.aliases=[]; if(p.dsRank===undefined) p.dsRank=null; if(p.uid===undefined) p.uid=null; if(p.powerSource===undefined) p.powerSource=p.powerSyncedAt?'kt':null; });
   d.cs.setups=d.cs.setups||{};
   d.cs.setups.rulebringers=d.cs.setups.rulebringers||JSON.parse(JSON.stringify(CS_DEFAULT_RB));
   d.cs.setups.dawnbreakers=d.cs.setups.dawnbreakers||JSON.parse(JSON.stringify(CS_DEFAULT_DB));
@@ -2688,6 +2689,13 @@ function csFind(name){
                               || (x.aliases||[]).some(a=>norm(a)===key||resolveKey(a)===key));
   return p||null;
 }
+// Same permanent-identity idea as db.players[key].uid (see applicantPlayer()) —
+// once a CS roster record's in-game account uid is known, it's a more reliable
+// match than name/alias for a future import, since it survives a rename.
+function csFindByUid(uid){
+  if(!uid) return null;
+  return db.cs.roster.find(x=>x.uid===uid)||null;
+}
 
 /* ---- fuzzy name matching (ported from CS Commander) ------------------ */
 function csLev(a,b){
@@ -3353,7 +3361,7 @@ function renderCsPlayers(){
       <td><b>${csEsc(p.name)}</b>${inRoster(p.name)?'':' <span class="badge b-ban" title="No matching player on the Roster tab">not on roster</span>'}
         ${(p.aliases||[]).length?`<div class="muted" style="font-size:11px">also: ${p.aliases.map(a=>
           `${csEsc(a)} <button class="mini admin-only" title="Remove this link" onclick="csUnlink('${p.id}','${csEsc(a).replace(/'/g,"&#39;")}')">✕</button>`).join(', ')}</div>`:''}</td>
-      <td${p.power?'':' style="color:var(--red)"'}>${p.power?p.power.toLocaleString():'— not set'}${p.powerSyncedAt?` <span class="badge b-noon" title="Set from Kill Tracker's Total Hero Power, synced ${new Date(p.powerSyncedAt).toLocaleString()}">KT</span>`:''}</td>
+      <td${p.power?'':' style="color:var(--red)"'}>${p.power?p.power.toLocaleString():'— not set'}${p.powerSyncedAt?` <span class="badge b-noon" title="Set from ${p.powerSource==='csv'?'a THP CSV import':"Kill Tracker's Total Hero Power"}, synced ${new Date(p.powerSyncedAt).toLocaleString()}">${p.powerSource==='csv'?'CSV':'KT'}</span>`:''}</td>
       <td><span class="badge b-noon">${csEsc(p.t1)}</span></td>
       <td><span class="badge ${p.ptype==='Roamer'?'b-eve':'b-wait'}">${csEsc(p.ptype)}</span></td>
       <td class="admin-only"><select onchange="setDsRank('${p.id}',this.value)">
@@ -3475,7 +3483,7 @@ window.syncThpFromKillTracker=async()=>{
       if(pl.thp==null) continue;
       const rec=csFind(pl.name);
       if(!rec){ unmatched.push(pl.name); continue; }
-      rec.power=Math.round(pl.thp); rec.powerSyncedAt=now;
+      rec.power=Math.round(pl.thp); rec.powerSyncedAt=now; rec.powerSource='kt';
       updated++;
     }
     if(updated){ save(); renderCsPlayers(); }
@@ -4024,12 +4032,83 @@ document.getElementById('csSearch').oninput=renderCsPlayers;
 document.getElementById('csAdd').onclick=()=>csEdit('');
 document.getElementById('csEvent').onchange=()=>{ csSel=null; renderCsBuild(); };
 document.getElementById('csSlot').onchange=()=>{ csSel=null; renderCsBuild(); };
+// Minimal CSV line parser (handles quoted fields, embedded commas, and "" as
+// an escaped quote) \u2014 the old plain name,power,t1,type import never needed
+// this, but the THP export below can carry commas inside quoted fields.
+function csvParseLine(line){
+  const cells=[]; let cur='',q=false;
+  for(let i=0;i<line.length;i++){
+    const c=line[i];
+    if(q){
+      if(c==='"'){ if(line[i+1]==='"'){ cur+='"'; i++; } else q=false; }
+      else cur+=c;
+    } else if(c==='"') q=true;
+    else if(c===','){ cells.push(cur); cur=''; }
+    else cur+=c;
+  }
+  cells.push(cur);
+  return cells.map(c=>c.trim());
+}
+/* ---------------------------------------------------------------------
+   Update-only import of a THP export CSV (columns include player_uid,
+   hero_total_power, apex_hero_name \u2014 Pete's own alliance-tracking tool,
+   an alternative to the "Sync THP from Kill Tracker" button above): unlike
+   the plain name/power/t1/type CSV below, which only ever ADDS players not
+   already on the CS roster, this only ever UPDATES existing records \u2014 same
+   convention as the Kill Tracker sync, and for the same reason: a name this
+   file doesn't recognise as a Storm Player yet is reported, not guessed at.
+   - `player_uid` is stored on the matched record (once known, later imports
+     match by uid first \u2014 same idea as db.players[key].uid, see
+     applicantPlayer() \u2014 so it survives a later in-game rename).
+   - `hero_total_power` (NOT the CSV's own `power` column, which is the raw
+     game Power stat) overwrites the roster's `power` field, since Power was
+     already repurposed to mean THP by the Kill Tracker sync above.
+   - `apex_hero_name` sets T1 by substring: DVA -> Aircraft, Tesla ->
+     Missile, Kimberly -> Tank; anything else leaves T1 untouched (Pete's
+     instruction \u2014 better to leave it alone than guess).
+   --------------------------------------------------------------------- */
+const THP_CSV_HERO_T1={dva:'Aircraft',tesla:'Missile',kimberly:'Tank'};
+function csImportThpCsv(rows){
+  const header=rows[0].map(h=>norm(h));
+  const iName=header.indexOf('player_name')>=0?header.indexOf('player_name'):header.indexOf('name');
+  const iUid=header.indexOf('player_uid');
+  const iThp=header.indexOf('hero_total_power');
+  const iHero=header.indexOf('apex_hero_name');
+  const now=new Date().toISOString();
+  let updated=0; const unmatched=[];
+  for(let r=1;r<rows.length;r++){
+    const c=rows[r]; if(!c||!c[iName]) continue;
+    const name=c[iName].trim(); if(!name) continue;
+    const uid=(iUid>=0?c[iUid]:'').trim()||null;
+    const thp=iThp>=0&&c[iThp]!==''?Math.round(parseFloat(c[iThp]))||0:null;
+    const heroRaw=(iHero>=0?c[iHero]:'').trim().toLowerCase();
+    let t1=null;
+    for(const k of Object.keys(THP_CSV_HERO_T1)) if(heroRaw.includes(k)){ t1=THP_CSV_HERO_T1[k]; break; }
+
+    const rec=(uid&&csFindByUid(uid))||csFind(name);
+    if(!rec){ unmatched.push(name); continue; }
+    if(uid&&!rec.uid) rec.uid=uid;
+    if(thp!=null){ rec.power=thp; rec.powerSyncedAt=now; rec.powerSource='csv'; }
+    if(t1) rec.t1=t1;
+    updated++;
+  }
+  save(); renderCsPlayers();
+  toast(`THP CSV: ${updated} updated${unmatched.length?`, ${unmatched.length} not matched (not on Storm Players yet) \u2014 see console`:''}`);
+  if(unmatched.length) console.log('THP CSV \u2014 not matched to an existing Storm Player:',unmatched);
+}
 document.getElementById('csImport').onchange=e=>{
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
   r.onload=()=>{
     const rows=String(r.result).replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n').split('\n')
-      .map(l=>l.split(',').map(c=>c.replace(/^"|"$/g,'').trim())).filter(c=>c[0]);
+      .map(csvParseLine).filter(c=>c[0]);
+    if(!rows.length){ e.target.value=''; return; }
+    const header=rows[0].map(h=>norm(h));
+    if(header.includes('player_uid')&&header.includes('hero_total_power')){
+      csImportThpCsv(rows);
+      e.target.value=''; return;
+    }
+    // plain name,power,t1,playertype import \u2014 unchanged, still ADD-only
     let added=0,skipped=0;
     rows.forEach(c=>{
       const name=c[0]; if(!name||norm(name)==='name') return;
@@ -4040,8 +4119,9 @@ document.getElementById('csImport').onchange=e=>{
     });
     save(); renderCsPlayers();
     toast(`Imported ${added}${skipped?`, skipped ${skipped} already present`:''}`);
+    e.target.value='';
   };
-  r.readAsText(f); e.target.value='';
+  r.readAsText(f);
 };
 
 for(const n of ['csEdit','csDelete','csPullRoster','csAskAlliance','csClear','csSetupEdit','csSetupReset','csLogSubs','csOpenLink','csUnlink','csSetupAdd','csSetupDel','csBriefEdit','syncThpFromKillTracker']){
