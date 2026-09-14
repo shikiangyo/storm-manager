@@ -1764,18 +1764,25 @@ function download(name,content,type){
   a.href=URL.createObjectURL(new Blob([content],{type:type||'text/plain'}));
   a.download=name; a.click();
 }
-document.getElementById('btnExportTeams').onclick=()=>{
-  const A=pendingAssignment; if(!A)return;
+// exportTeamsCsv/copyTeamsText below take an assignment-shaped object (A) rather
+// than reading `pendingAssignment` directly, so the exact same code can render
+// either the not-yet-saved "3 · Teams" step OR a saved History event, via the
+// evToAssignmentLike() adapter further down — see "New Event tab — copy/export
+// teams from a saved History event" for why. `m.avail`/`m.guaranteed` are absent
+// on a History-derived row (that detail isn't stored on a saved event), so both
+// guard with `||''`/`?:'no'` rather than printing "undefined".
+function exportTeamsCsv(A){
+  if(!A) return;
   let csv='team,role,player,availability,guaranteed\n';
   for(const slot of ['noon','evening']) A.teams[slot].forEach((m,i)=>{
-    csv+=`${slot},${i<A.starters?'starter':'sub'},${m.name},${m.avail},${m.guaranteed?'yes':'no'}\n`;
+    csv+=`${slot},${i<A.starters?'starter':'sub'},${m.name},${m.avail||''},${m.guaranteed?'yes':'no'}\n`;
   });
-  A.waitlist.forEach(m=>csv+=`waitlist,,${m.name},${m.avail},${m.guaranteed?'yes':'no'}\n`);
+  A.waitlist.forEach(m=>csv+=`waitlist,,${m.name},${m.avail||''},${m.guaranteed?'yes':'no'}\n`);
   A.notAvailable.forEach(m=>csv+=`not_available,,${m.name},not available,\n`);
   download(`${A.mode}-${A.date}-teams.csv`,csv,'text/csv');
-};
-document.getElementById('btnCopyTeams').onclick=()=>{
-  const A=pendingAssignment; if(!A)return;
+}
+function copyTeamsText(A){
+  if(!A) return;
   let txt=`${MODES[A.mode]} — ${A.date}\n`;
   for(const [slot,label] of [['noon','☀️ NOON TEAM'],['evening','🌙 EVENING TEAM']]){
     txt+=`\n${label}\nStarters:\n`;
@@ -1784,7 +1791,9 @@ document.getElementById('btnCopyTeams').onclick=()=>{
   if(A.waitlist.length) txt+='\nWaitlist: '+A.waitlist.map(m=>m.name).join(', ')+'\n';
   if(A.notAvailable.length) txt+='Not available: '+A.notAvailable.map(m=>m.name).join(', ')+'\n';
   navigator.clipboard.writeText(txt).then(()=>toast('Roster copied — paste into Discord/chat'));
-};
+}
+document.getElementById('btnExportTeams').onclick=()=>exportTeamsCsv(pendingAssignment);
+document.getElementById('btnCopyTeams').onclick=()=>copyTeamsText(pendingAssignment);
 
 /* Renders the same two teams shown in "3 · Teams" as a shareable image — noon
    and evening side by side, same info as the on-screen table (role, Power,
@@ -1879,18 +1888,55 @@ function wrapText(str,x,y,maxChars,color){
   if(cur) lines.push(cur);
   return lines.map((l,i)=>`<text x="${x}" y="${y+i*16}" font-family="Arial,sans-serif" font-size="12" fill="${color}">${esc(l)}</text>`).join('');
 }
-document.getElementById('btnDownloadTeamsPng').onclick=async()=>{
-  const A=pendingAssignment; if(!A)return;
-  const btn=document.getElementById('btnDownloadTeamsPng');
-  btn.disabled=true; const orig=btn.textContent; btn.textContent='Rendering…';
+// Shared by the "3 · Teams" step's own button and the History tab's per-event
+// button (see evToAssignmentLike below) — `btn` is optional so a caller that
+// doesn't have a dedicated button element can still call this.
+async function downloadTeamsPng(A,btn){
+  if(!A) return;
+  const orig=btn?btn.textContent:null;
+  if(btn){ btn.disabled=true; btn.textContent='Rendering…'; }
   try{
     await csDownloadPNG(evTeamsSVG(A), `${A.mode}-${A.date}-teams.png`, 2);
   }catch(e){
     toast('PNG export failed: '+(e&&e.message||e),'err');
   }finally{
-    btn.disabled=false; btn.textContent=orig;
+    if(btn){ btn.disabled=false; btn.textContent=orig; }
   }
-};
+}
+document.getElementById('btnDownloadTeamsPng').onclick=()=>downloadTeamsPng(pendingAssignment,document.getElementById('btnDownloadTeamsPng'));
+
+// Adapts a saved db.events[] record (History tab) into the same {mode,date,
+// starters,teamSize,teams,waitlist,notAvailable,dsStrength,canyonSplit,
+// desertSplit} shape pendingAssignment has, so exportTeamsCsv/copyTeamsText/
+// downloadTeamsPng/evTeamsSVG — built for the pre-save "3 · Teams" step — can
+// render a saved event's teams unchanged. A saved event's rows only ever
+// carry {name,role,attended,banDays?,note?} (avail/guaranteed aren't kept
+// once an event is saved), and waitlist/notAvailable are plain name strings
+// rather than {name} objects — both reconciled here. Role assignment stays
+// index-based (`i<A.starters`) rather than reading each row's own `.role`:
+// swapPerson()/changePerson() (History's own edit tools) always keep a
+// position's role pinned to that position when swapping people into it, so
+// index-based and stored-role agree for every saved event. teamSize has no
+// saved equivalent (only the configured *capacity* mattered pre-save, and
+// that number isn't persisted) — approximated as the larger team's actual
+// size, which only affects the "X/Y" header count on the PNG image.
+// dsStrength/canyonSplit/desertSplit are per-run explanatory data that were
+// never persisted onto the event either, so the "stronger side"/"priority
+// team" banner and badges simply don't appear on a History-sourced export —
+// only the actual noon/evening line-up does.
+function evToAssignmentLike(ev){
+  const mapNames=arr=>(arr||[]).map(n=>({name:typeof n==='object'?n.name:n}));
+  return {
+    mode:ev.mode, date:ev.date, starters:ev.starters,
+    teamSize:Math.max(ev.teams.noon.length,ev.teams.evening.length,ev.starters||0),
+    teams:{noon:ev.teams.noon.map(m=>({name:m.name})), evening:ev.teams.evening.map(m=>({name:m.name}))},
+    waitlist:mapNames(ev.waitlist), notAvailable:mapNames(ev.notAvailable),
+    dsStrength:null, canyonSplit:null, desertSplit:null
+  };
+}
+window.evExportCsv=id=>{ const ev=db.events.find(e=>e.id===id); if(ev) exportTeamsCsv(evToAssignmentLike(ev)); };
+window.evCopyText=id=>{ const ev=db.events.find(e=>e.id===id); if(ev) copyTeamsText(evToAssignmentLike(ev)); };
+window.evDownloadPng=(id,btn)=>{ const ev=db.events.find(e=>e.id===id); if(ev) downloadTeamsPng(evToAssignmentLike(ev),btn); };
 
 /* ================= roster tab ================= */
 let rosterKeys=[]; // maps rendered row index -> db.players key
@@ -2242,6 +2288,11 @@ window.openEvent=id=>{
         : `<button class="btn ok" onclick="markAll(${id},true)">Mark all as showed</button>
            <button class="btn gold" onclick="applyBans(${id})">💾 Save attendance &amp; apply bans</button>
            <button class="btn ghost" onclick="switchMode(${id})">⇄ Change to ${ev.mode==='desert'?'Canyon':'Desert'} Storm</button>`}
+    </div>
+    <div class="row">
+      <button class="btn ghost" onclick="evExportCsv(${id})">Export teams CSV</button>
+      <button class="btn ghost" onclick="evCopyText(${id})">Copy roster text</button>
+      <button class="btn ghost" id="btnHistPng-${id}" onclick="evDownloadPng(${id},this)">📷 Download teams PNG</button>
     </div>
     <div class="flexh">${teamRows('noon','☀️ Noon')}${teamRows('evening','🌙 Evening')}</div>
     ${ev.waitlist.length?`<p class="help">Waitlist was: ${ev.waitlist.map(esc).join(', ')}</p>`:''}`;
