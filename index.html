@@ -1620,10 +1620,15 @@ function renderAssignment(){
     return p&&isBanned(p,A.mode,A.date)?`<span class="badge b-ban">BANNED until ${p.banUntil[A.mode]}</span> `:'';
   };
   const fmtM=n=>n?(n/1e6).toFixed(0)+'m':'—';
+  // Power only — deliberately omits the DS Ranking grade letter (A-E) so this
+  // on-screen team list is safe to share more widely (Pete: "so I can then
+  // share with more people"). The grade still drives the actual placement
+  // logic (dsCmp, strongerSideOf) — it's only hidden from every display, here
+  // and in the PNG export / rank-by-rank breakdown below.
   const dsBadge=name=>{
     if(A.mode!=='desert' && !(A.mode==='canyon'&&A.canyonSplit==='priority')) return '';
     const d=dsStrengthOf(name);
-    return `<span class="badge b-wait" title="DS Ranking${d.grade?'':' — unranked, counts as weakest'}">${d.grade||'—'} · ${fmtM(d.power)}</span> `;
+    return `<span class="badge b-wait" title="Power">${fmtM(d.power)}</span> `;
   };
   const teamHtml=(slot,label)=>{
     const list=A.teams[slot];
@@ -1664,7 +1669,7 @@ function renderAssignment(){
   A.notAvailable.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
   const na=A.notAvailable.map((m,i)=>`<li>${esc(m.name)} &nbsp; ${history(m.name)} <button class="mini" title="Remove from event" onclick="removeNa(${i})">✕</button></li>`).join('');
   const dsRowsHtml=(A.dsStrength&&A.dsStrength.rows&&A.dsStrength.rows.length)?A.dsStrength.rows.map(r=>{
-    const cell=x=>x?`${esc(x.name)} <span class="muted">(${x.grade||'unranked'} · ${fmtM(x.power)})</span>`:'<span class="muted">—</span>';
+    const cell=x=>x?`${esc(x.name)} <span class="muted">(${fmtM(x.power)})</span>`:'<span class="muted">—</span>'; // grade letter deliberately omitted — see dsBadge above
     const w=r.winner==='tie'?'Tie':(r.winner==='noon'?'Noon':'Evening');
     const pts=r.kind==='tie'?'—':(r.kind==='grade'?`+1 (grade)`:`+${r.points.toFixed(2).replace(/0$/,'').replace(/\.$/,'')} (1 + ${r.margin.toFixed(1)}m margin)`);
     return `<tr><td>${r.rank}</td><td>${cell(r.a)}</td><td>${cell(r.b)}</td><td>${w}</td><td>${pts}</td></tr>`;
@@ -1796,14 +1801,19 @@ document.getElementById('btnExportTeams').onclick=()=>exportTeamsCsv(pendingAssi
 document.getElementById('btnCopyTeams').onclick=()=>copyTeamsText(pendingAssignment);
 
 /* Renders the same two teams shown in "3 · Teams" as a shareable image — noon
-   and evening side by side, same info as the on-screen table (role, Power,
-   DS Ranking grade when set) plus waitlist, so it can be dropped straight into
-   Discord/WhatsApp instead of a screenshot. Reuses csDownloadPNG's SVG->canvas
-   ->PNG pipeline (already used for the Squad Setup poster) rather than adding
-   a second image-export mechanism. Power/grade come from dsStrengthOf() —
-   the same CS-roster lookup Desert/priority-Canyon already use for their
-   on-screen badges — shown here for every mode, since a screenshot-replacement
-   is more useful with Power on it regardless of mode. */
+   and evening side by side, same info as the on-screen table (role, Power)
+   plus waitlist, so it can be dropped straight into Discord/WhatsApp instead
+   of a screenshot. Reuses csDownloadPNG's SVG->canvas->PNG pipeline (already
+   used for the Squad Setup poster) rather than adding a second image-export
+   mechanism. Power comes from dsStrengthOf() — the same CS-roster lookup
+   Desert/priority-Canyon already use for their on-screen badges — shown here
+   for every mode, since a screenshot-replacement is more useful with Power on
+   it regardless of mode. The DS Ranking grade letter (A-E) dsStrengthOf() also
+   returns is deliberately never rendered into this image (added 2026-09-15,
+   Pete: "so I can then share with more people") — same reasoning as dsBadge
+   above and the rank-by-rank breakdown's cell(): the grade still drives the
+   actual noon/evening split, it's just not printed anywhere a wider audience
+   would see it. */
 function evTeamsSVG(A){
   const EV={bg:'#12151c',panel:'#1b202b',panel2:'#232a38',border:'#323b4d',
     text:'#e6eaf2',muted:'#8b96ab',accent:'#f0a832',accent2:'#4a9eff',
@@ -1839,7 +1849,7 @@ function evTeamsSVG(A){
         y+=ROWH; sawSub=true;
       }
       const roleColor=r.starter?EV.green:EV.accent;
-      const tags=(r.guaranteed?' G':'')+(r.grade?` · ${r.grade}`:'');
+      const tags=r.guaranteed?' G':''; // grade letter deliberately omitted — see the comment above evTeamsSVG
       s+=`<text x="${x+18}" y="${y+14}" font-family="Arial,sans-serif" font-size="12" fill="${EV.muted}">${r.i+1}.</text>
 <text x="${x+42}" y="${y+14}" font-family="Arial,sans-serif" font-size="13" fill="${EV.text}">${esc(r.name)}</text>
 <text x="${x+COLW-150}" y="${y+14}" font-family="Arial,sans-serif" font-size="11" fill="${roleColor}">${r.starter?'STARTER':'SUB'}${esc(tags)}</text>
