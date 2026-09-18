@@ -290,7 +290,7 @@
 <section id="tab-rescanyon" style="display:none">
   <div class="panel">
     <h2>Canyon Storm results</h2>
-    <p class="help">Scores come straight from the in-game result mails, read off the PC that plays (reader app, Event results tab &rarr; Copy all, or <code>event_reports.py --bundle</code>). Paste below: either one match's JSON or the combined <code>storm_results.json</code> — both work, and re-pasting something already here just refreshes it. Importing also fills in attendance on the History tab: anyone picked who doesn't appear in a result is marked a no-show, and anything you've already set by hand is left alone.</p>
+    <p class="help">Scores come straight from the in-game result mails, read off the PC that plays (reader app, Event results tab &rarr; Copy all, or <code>event_reports.py --bundle</code>). Paste below: either one match's JSON or the combined <code>storm_results.json</code> — both work, and re-pasting something already here just refreshes it. Importing also fills in attendance on the History tab: anyone picked who doesn't appear in a result is marked a no-show. <b>Locked events are never touched</b> &mdash; unlock one there first if you want results applied to it. Only rows still showing as pending are filled in silently; if a result disagrees with a mark you've already set, you're asked before anything changes.</p>
     <div id="resImportCanyon"></div>
   </div>
   <div class="panel"><h2>Record</h2><div id="resRecordCanyon"></div></div>
@@ -4621,13 +4621,19 @@ function importResultsBundle(text){
   return Object.assign({added,updated},att);
 }
 
-/* Match each result to an event slot and fill in attendance.
+/* Work out which result belongs to which event slot, and what it would change.
+   Nothing is written here — this only builds the plan, so the caller can ask
+   before touching anything that is already filled in.
+
    Which slot a report belongs to is decided by comparing who actually played
    against who was picked in each slot, so the two Canyon matches on a Thursday
-   land the right way round without relying on their order. A slot the export
-   already knows (Desert's noon/evening) is trusted when it fits. */
-function applyAttendanceFromResults(){
-  const out={matched:0,attended:0,noshows:0,skipped:[]};
+   land the right way round without relying on their order.
+
+   A LOCKED event is left out of the plan entirely. Locking is how you say an
+   event's attendance is final, so an import never reopens it — unlock it on the
+   History tab first if you want the results applied. */
+function planAttendanceFromResults(){
+  const plan=[], skipped=[], locked=[];
   const groups={};
   for(const r of resReports('canyon').concat(resReports('desert'))){
     const k=r.mode+'|'+r.date; (groups[k]=groups[k]||[]).push(r);
@@ -4636,9 +4642,10 @@ function applyAttendanceFromResults(){
     const [mode,date]=gk.split('|');
     const reps=groups[gk];
     const ev=(db.events||[]).find(e=>e.mode===mode&&e.date===date);
-    if(!ev||!ev.teams){ out.skipped.push(RES_MODE_NAME[mode]+' '+date+' — no matching event'); continue; }
+    if(!ev||!ev.teams){ skipped.push(RES_MODE_NAME[mode]+' '+date+' — no matching event'); continue; }
+    if(ev.locked){ locked.push(RES_MODE_NAME[mode]+' '+date); continue; }
     const slots=['noon','evening'].filter(x=>Array.isArray(ev.teams[x])&&ev.teams[x].length);
-    if(!slots.length){ out.skipped.push(RES_MODE_NAME[mode]+' '+date+' — event has no teams'); continue; }
+    if(!slots.length){ skipped.push(RES_MODE_NAME[mode]+' '+date+' — event has no teams'); continue; }
 
     const playedSet=r=>new Set((r.players||[]).map(resIdent));
     const pickKey=m=>resolveKey(m.name)||('name:'+norm(m.name||''));
@@ -4664,13 +4671,53 @@ function applyAttendanceFromResults(){
       if(sc>bestScore){ bestScore=sc; best=c; }
     }
     for(const [r,slot] of best){
-      r.slot=slot; out.matched++;
-      const set=playedSet(r);
+      const set=playedSet(r), changes=[];
       for(const m of ev.teams[slot]){
-        if(m.attended===true||m.attended===false) continue;   // keep manual edits
-        if(set.has(pickKey(m))){ m.attended=true; out.attended++; }
-        else { m.attended=false; out.noshows++; }
+        const to=set.has(pickKey(m));
+        const from=(m.attended===true||m.attended===false)?m.attended:null;
+        if(from===to) continue;                 // already says the right thing
+        changes.push({row:m,name:m.name,from:from,to:to});
       }
+      plan.push({ev:ev,slot:slot,rep:r,mode:mode,date:date,changes:changes});
+    }
+  }
+  return {plan,skipped,locked};
+}
+
+/* Apply the plan. Anything still pending is filled in silently; anything that
+   would CHANGE a mark already there (set by hand, or by an earlier import) is
+   only touched if you say so. */
+function applyAttendanceFromResults(){
+  const {plan,skipped,locked}=planAttendanceFromResults();
+  const out={matched:0,attended:0,noshows:0,kept:0,overwritten:0,
+             skipped:skipped,locked:locked};
+
+  const clashes=[];
+  for(const p of plan) for(const c of p.changes) if(c.from!==null) clashes.push({p,c});
+
+  let overwrite=true;
+  if(clashes.length){
+    const word=v=>v?'present':'no-show';
+    const lines=clashes.slice(0,10).map(({p,c})=>
+      '  '+RES_MODE_NAME[p.mode]+' '+p.date+' ('+p.slot+') — '+c.name+':  '+
+      word(c.from)+'  →  '+word(c.to));
+    overwrite=confirm(
+      clashes.length+' attendance mark'+(clashes.length===1?'':'s')+
+      ' already set '+(clashes.length===1?'disagrees':'disagree')+' with the results:\n\n'+
+      lines.join('\n')+
+      (clashes.length>10?'\n  …and '+(clashes.length-10)+' more':'')+
+      '\n\nOK — overwrite with what the results say'+
+      '\nCancel — keep what is there, and only fill in the ones still pending');
+  }
+
+  for(const p of plan){
+    p.rep.slot=p.slot;               // display only; safe either way
+    out.matched++;
+    for(const c of p.changes){
+      if(c.from!==null&&!overwrite){ out.kept++; continue; }
+      c.row.attended=c.to;
+      if(c.from!==null) out.overwritten++;
+      if(c.to) out.attended++; else out.noshows++;
     }
   }
   return out;
@@ -4809,7 +4856,17 @@ window.doImportResults=function(mode){
     const r=importResultsBundle(text);
     const bits=[r.added+' new report'+(r.added===1?'':'s')];
     if(r.updated) bits.push(r.updated+' refreshed');
-    if(r.matched) bits.push(r.matched+' matched to events ('+r.attended+' present, '+r.noshows+' no-show'+(r.noshows===1?'':'s')+')');
+    if(r.matched){
+      let m=r.matched+' matched to events ('+r.attended+' present, '+r.noshows+
+            ' no-show'+(r.noshows===1?'':'s');
+      if(r.overwritten) m+=', '+r.overwritten+' overwritten';
+      bits.push(m+')');
+    }
+    if(r.kept) bits.push(r.kept+' existing mark'+(r.kept===1?'':'s')+' kept');
+    if(r.locked&&r.locked.length)
+      bits.push(r.locked.length+' locked event'+(r.locked.length===1?'':'s')+
+                ' left untouched ('+r.locked.slice(0,3).join(', ')+
+                (r.locked.length>3?', …':'')+')');
     if(r.skipped&&r.skipped.length){
       // usually just history from before the event was created here — keep it short
       const sk=r.skipped.slice(0,3).join('; ');
