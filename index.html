@@ -290,7 +290,7 @@
 <section id="tab-rescanyon" style="display:none">
   <div class="panel">
     <h2>Canyon Storm results</h2>
-    <p class="help">Scores come straight from the in-game result mails, exported by <code>event_reports.py --bundle</code> on the PC that plays. Paste the file's contents below. Importing also fills in attendance on the History tab: anyone picked who doesn't appear in a result is marked a no-show, and anything you've already set by hand is left alone.</p>
+    <p class="help">Scores come straight from the in-game result mails, read off the PC that plays (reader app, Event results tab &rarr; Copy all, or <code>event_reports.py --bundle</code>). Paste below: either one match's JSON or the combined <code>storm_results.json</code> — both work, and re-pasting something already here just refreshes it. Importing also fills in attendance on the History tab: anyone picked who doesn't appear in a result is marked a no-show, and anything you've already set by hand is left alone.</p>
     <div id="resImportCanyon"></div>
   </div>
   <div class="panel"><h2>Record</h2><div id="resRecordCanyon"></div></div>
@@ -300,7 +300,7 @@
 <section id="tab-resdesert" style="display:none">
   <div class="panel">
     <h2>Desert Storm results</h2>
-    <p class="help">Same import as the Canyon tab — one paste covers both modes, so you only need to do it once.</p>
+    <p class="help">Same import as the Canyon tab — the combined file covers both modes, so one paste does the lot. A single Desert match's JSON works too.</p>
     <div id="resImportDesert"></div>
   </div>
   <div class="panel"><h2>Record</h2><div id="resRecordDesert"></div></div>
@@ -4586,15 +4586,31 @@ function resLabel(p){ const k=resKey(p); return k?db.players[k].name:(p&&p.name)
 function resIdent(p){ return resKey(p)||('name:'+norm((p&&p.name)||'')); }
 const nfmt=n=>(n==null?'—':Number(n).toLocaleString());
 
+/* Accepts any of the three shapes the reader app produces:
+     - the combined file        {kind:'lastwar-storm-results', reports:[...]}
+     - one result on its own    {kind:'lastwar-storm-result', mode, date, ...}
+     - a plain array of results [ {...}, {...} ]
+   so pasting a single match works as well as pasting the lot. */
+function resNormalise(parsed){
+  if(Array.isArray(parsed)) return parsed;
+  if(!parsed||typeof parsed!=='object') return null;
+  if(Array.isArray(parsed.reports)) return parsed.reports;
+  if(parsed.id&&parsed.mode) return [parsed];
+  return null;
+}
+
 function importResultsBundle(text){
-  let bundle;
-  try{ bundle=JSON.parse(text); }
+  let parsed;
+  try{ parsed=JSON.parse(text); }
   catch(e){ throw new Error('That does not look like JSON'); }
-  if(!bundle||bundle.kind!=='lastwar-storm-results'||!Array.isArray(bundle.reports))
-    throw new Error('Not a storm results file (expected kind "lastwar-storm-results")');
+  const reports=resNormalise(parsed);
+  if(!reports)
+    throw new Error('Not a storm results file — paste a result from the reader app '+
+                    '(one match, or the combined storm_results.json)');
+  if(!reports.length) throw new Error('That file has no results in it');
   db.results=db.results||{}; db.results.reports=db.results.reports||{};
   let added=0,updated=0;
-  for(const r of bundle.reports){
+  for(const r of reports){
     if(!r||!r.id) continue;
     if(db.results.reports[r.id]) updated++; else added++;
     db.results.reports[r.id]=r;
