@@ -24,6 +24,11 @@
   .panel h2{margin:0 0 12px;font-size:16px}
   .panel h3{margin:14px 0 8px;font-size:14px;color:var(--accent2)}
   table{width:100%;border-collapse:collapse;font-size:13px}
+  .res-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .res-head h2{margin:0}
+  th.res-sort{cursor:pointer;user-select:none;white-space:nowrap}
+  th.res-sort:hover{color:var(--accent2)}
+  th.res-sort.on{color:var(--accent)}
   th{text-align:left;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px}
   td{padding:6px 8px;border-bottom:1px solid #262d3b}
   tr:hover td{background:#20263300}
@@ -293,9 +298,9 @@
     <p class="help">Scores come straight from the in-game result mails, read off the PC that plays (reader app, Event results tab &rarr; Copy all, or <code>event_reports.py --bundle</code>). Paste below: either one match's JSON or the combined <code>storm_results.json</code> — both work, and re-pasting something already here just refreshes it. Importing also fills in attendance on the History tab: anyone picked who doesn't appear in a result is marked a no-show. <b>Locked events are never touched</b> &mdash; unlock one there first if you want results applied to it. Only rows still showing as pending are filled in silently; if a result disagrees with a mark you've already set, you're asked before anything changes.</p>
     <div id="resImportCanyon"></div>
   </div>
-  <div class="panel"><h2>Record</h2><div id="resRecordCanyon"></div></div>
-  <div class="panel"><h2>Players</h2><div id="resPlayersCanyon"></div></div>
-  <div class="panel"><h2>Matches</h2><div id="resMatchesCanyon"></div></div>
+  <div class="panel"><div class="res-head"><h2>Record</h2><button class="mini" onclick="resPng('canyon','record')">⬇ Download PNG</button></div><div id="resRecordCanyon"></div></div>
+  <div class="panel"><div class="res-head"><h2>Players</h2><button class="mini" onclick="resPng('canyon','players')">⬇ Download PNG</button></div><p class="help" style="margin-top:0">Click any heading to sort by it; click it again to flip the order.</p><div id="resPlayersCanyon"></div></div>
+  <div class="panel"><div class="res-head"><h2>Matches</h2><button class="mini" onclick="resPng('canyon','matches')">⬇ Download PNG</button></div><div id="resMatchesCanyon"></div></div>
 </section>
 <section id="tab-resdesert" style="display:none">
   <div class="panel">
@@ -303,9 +308,9 @@
     <p class="help">Same import as the Canyon tab — the combined file covers both modes, so one paste does the lot. A single Desert match's JSON works too.</p>
     <div id="resImportDesert"></div>
   </div>
-  <div class="panel"><h2>Record</h2><div id="resRecordDesert"></div></div>
-  <div class="panel"><h2>Players</h2><div id="resPlayersDesert"></div></div>
-  <div class="panel"><h2>Matches</h2><div id="resMatchesDesert"></div></div>
+  <div class="panel"><div class="res-head"><h2>Record</h2><button class="mini" onclick="resPng('desert','record')">⬇ Download PNG</button></div><div id="resRecordDesert"></div></div>
+  <div class="panel"><div class="res-head"><h2>Players</h2><button class="mini" onclick="resPng('desert','players')">⬇ Download PNG</button></div><p class="help" style="margin-top:0">Click any heading to sort by it; click it again to flip the order.</p><div id="resPlayersDesert"></div></div>
+  <div class="panel"><div class="res-head"><h2>Matches</h2><button class="mini" onclick="resPng('desert','matches')">⬇ Download PNG</button></div><div id="resMatchesDesert"></div></div>
 </section>
 <section id="tab-notes" style="display:none">
   <div class="panel">
@@ -4571,6 +4576,49 @@ if(KILL_TRACKER_THP_FEED_URL){
    (noon / evening). ------------------------------------------------------- */
 const RES_MODE_NAME={canyon:'Canyon Storm',desert:'Desert Storm'};
 
+/* The players table is described once here, so the headers, the cells and the
+   PNG export can't drift apart. `num` marks a column that sorts numerically
+   and prints right-aligned. */
+const RES_COLS={
+  canyon:[{k:'name',t:'Player'},{k:'matches',t:'Matches',num:1},
+          {k:'avgTotal',t:'Avg total',num:1},{k:'avgBattle',t:'Avg battle',num:1},
+          {k:'avgAssist',t:'Avg assist',num:1},{k:'avgStrategy',t:'Avg strategy',num:1},
+          {k:'best',t:'Best',num:1},{k:'avgRank',t:'Avg rank',num:1}],
+  desert:[{k:'name',t:'Player'},{k:'matches',t:'Matches',num:1},
+          {k:'avgScore',t:'Avg score',num:1},{k:'best',t:'Best',num:1},
+          {k:'score',t:'Total',num:1},{k:'avgRank',t:'Avg rank',num:1}],
+};
+// current sort per tab; -1 = biggest first, which is what you want on arrival
+const resSort={canyon:{k:'avgTotal',dir:-1},desert:{k:'avgScore',dir:-1}};
+
+window.resSortBy=function(mode,k){
+  const s=resSort[mode];
+  if(s.k===k){ s.dir=-s.dir; }
+  else {
+    s.k=k;
+    // names read best A-Z, and a low average rank is the good end; everything
+    // else is more useful biggest-first
+    s.dir=(k==='name'||k==='avgRank')?1:-1;
+  }
+  renderResults(mode);
+};
+
+function resSortPlayers(mode,players){
+  const {k,dir}=resSort[mode];
+  const col=(RES_COLS[mode]||[]).find(c=>c.k===k);
+  return players.slice().sort((a,b)=>{
+    if(!col||!col.num){
+      return dir*String(a[k]||'').localeCompare(String(b[k]||''),undefined,{sensitivity:'base'});
+    }
+    const av=a[k], bv=b[k];
+    // blanks (e.g. no rank recorded) always sit at the bottom, either direction
+    if(av==null&&bv==null) return 0;
+    if(av==null) return 1;
+    if(bv==null) return -1;
+    return dir*(av-bv);
+  });
+}
+
 function resReports(mode){
   return Object.values((db.results&&db.results.reports)||{})
     .filter(r=>r&&r.mode===mode)
@@ -4797,24 +4845,29 @@ function renderResults(mode){
       : '<p class="muted">No '+RES_MODE_NAME[mode]+' results imported yet.</p>';
   }
 
-  // ---- players ----
+  // ---- players (every heading sorts) ----
   const pel=document.getElementById('resPlayers'+Cap);
   if(pel){
     if(!players.length){ pel.innerHTML='<p class="muted">Nothing to show yet.</p>'; }
-    else if(mode==='canyon'){
-      pel.innerHTML='<table class="grid"><thead><tr><th>Player</th><th>Matches</th>'+
-        '<th>Avg total</th><th>Avg battle</th><th>Avg assist</th><th>Avg strategy</th>'+
-        '<th>Best</th><th>Avg rank</th></tr></thead><tbody>'+
-        players.map(p=>'<tr><td>'+esc(p.name)+(p.inRoster?'':' <span class="muted">(not in roster)</span>')+
-          '</td><td>'+p.matches+'</td><td>'+nfmt(p.avgTotal)+'</td><td>'+nfmt(p.avgBattle)+
-          '</td><td>'+nfmt(p.avgAssist)+'</td><td>'+nfmt(p.avgStrategy)+'</td><td>'+nfmt(p.best)+
-          '</td><td>'+(p.avgRank==null?'—':p.avgRank)+'</td></tr>').join('')+'</tbody></table>';
-    }else{
-      pel.innerHTML='<table class="grid"><thead><tr><th>Player</th><th>Matches</th>'+
-        '<th>Avg score</th><th>Best</th><th>Total</th><th>Avg rank</th></tr></thead><tbody>'+
-        players.map(p=>'<tr><td>'+esc(p.name)+(p.inRoster?'':' <span class="muted">(not in roster)</span>')+
-          '</td><td>'+p.matches+'</td><td>'+nfmt(p.avgScore)+'</td><td>'+nfmt(p.best)+
-          '</td><td>'+nfmt(p.score)+'</td><td>'+(p.avgRank==null?'—':p.avgRank)+'</td></tr>').join('')+
+    else{
+      const cols=RES_COLS[mode], s=resSort[mode];
+      const head=cols.map(c=>{
+        const arrow=s.k===c.k?(s.dir===1?' ▲':' ▼'):'';
+        // data-label keeps the arrow out of the exported PNG
+        return '<th class="res-sort'+(s.k===c.k?' on':'')+'" data-label="'+esc(c.t)+'"'+
+               ' title="Sort by '+esc(c.t)+'"'+
+               ' onclick="resSortBy(\''+mode+'\',\''+c.k+'\')">'+esc(c.t)+arrow+'</th>';
+      }).join('');
+      const cell=(p,c)=>{
+        if(c.k==='name')
+          return esc(p.name)+(p.inRoster?'':' <span class="muted">(not in roster)</span>');
+        if(c.k==='matches') return String(p.matches);
+        if(c.k==='avgRank') return p.avgRank==null?'—':String(p.avgRank);
+        return nfmt(p[c.k]);
+      };
+      pel.innerHTML='<table class="grid"><thead><tr>'+head+'</tr></thead><tbody>'+
+        resSortPlayers(mode,players).map(p=>'<tr>'+
+          cols.map(c=>'<td>'+cell(p,c)+'</td>').join('')+'</tr>').join('')+
         '</tbody></table>';
     }
   }
@@ -4843,6 +4896,112 @@ function renderResults(mode){
       : '';
   }
 }
+
+/* ---- download a table as a PNG -------------------------------------------
+   Drawn onto a canvas from the table's own text rather than screenshotting the
+   page, so it needs no library, works offline, and comes out the same whatever
+   is scrolled into view. Rendered at 2x so it stays sharp when pasted into
+   Discord or a doc. */
+const RES_PANEL={record:'Record',players:'Players',matches:'Matches'};
+
+function tableToPng(table,title,subtitle,filename){
+  const ths=[...table.querySelectorAll('thead th')];
+  const head=ths.map(th=>(th.dataset.label||th.textContent||'').trim());
+  const rows=[...table.querySelectorAll('tbody tr')]
+    .map(tr=>[...tr.children].map(td=>(td.textContent||'').trim().replace(/\s+/g,' ')));
+  if(!rows.length) throw new Error('nothing to download yet');
+
+  const C={bg:'#12151c',head:'#232a38',row:'#1b202b',alt:'#171c26',
+           line:'#323b4d',text:'#e6eaf2',muted:'#8b96ab',accent:'#f0a832',
+           win:'#3ecf8e',loss:'#f05b5b'};
+  const FONT='13px ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+  const BOLD='600 '+FONT, TITLE='700 18px '+FONT.slice(5), SUB='12px '+FONT.slice(5);
+  const PAD=18, GUT=16, ROW=30, HEAD=34, TOP=58, FOOT=26;
+
+  const c=document.createElement('canvas');
+  const x=c.getContext('2d');
+
+  // measure everything first — sizing the canvas resets the context
+  x.font=BOLD;
+  const w=head.map(h=>x.measureText(h).width);
+  x.font=FONT;
+  rows.forEach(r=>r.forEach((v,i)=>{ w[i]=Math.max(w[i]||0,x.measureText(v).width); }));
+  const colW=w.map(v=>Math.ceil(v)+GUT*2);
+  const tableW=colW.reduce((a,b)=>a+b,0);
+  x.font=TITLE;
+  const titleW=x.measureText(title).width;
+
+  const W=Math.ceil(Math.max(tableW,titleW)+PAD*2);
+  const H=Math.ceil(TOP+HEAD+rows.length*ROW+FOOT+PAD);
+  const S=2;
+  c.width=W*S; c.height=H*S;
+  x.scale(S,S);
+  x.textBaseline='middle';
+
+  x.fillStyle=C.bg; x.fillRect(0,0,W,H);
+  x.fillStyle=C.accent; x.font=TITLE;
+  x.fillText(title,PAD,PAD+10);
+  x.fillStyle=C.muted; x.font=SUB;
+  x.fillText(subtitle,PAD,PAD+32);
+
+  // a column is right-aligned when every value in it reads as a number
+  const numeric=head.map((_,i)=>
+    rows.every(r=>!r[i]||/^[-+]?[\d,]+(\.\d+)?%?$/.test(r[i])));
+
+  const drawRow=(cells,y,h,font,colour)=>{
+    x.font=font;
+    let cx=PAD;
+    cells.forEach((v,i)=>{
+      // the result column loses its badge in a flat image, so colour the word
+      x.fillStyle=(v==='WIN'&&colour!==C.muted)?C.win
+                 :(v==='LOSS'&&colour!==C.muted)?C.loss:colour;
+      if(numeric[i]){ x.textAlign='right'; x.fillText(v,cx+colW[i]-GUT,y+h/2); }
+      else { x.textAlign='left'; x.fillText(v,cx+GUT,y+h/2); }
+      cx+=colW[i];
+    });
+    x.textAlign='left';
+  };
+
+  let y=TOP;
+  x.fillStyle=C.head; x.fillRect(PAD,y,tableW,HEAD);
+  drawRow(head,y,HEAD,BOLD,C.muted);
+  y+=HEAD;
+  rows.forEach((r,i)=>{
+    x.fillStyle=i%2?C.alt:C.row; x.fillRect(PAD,y,tableW,ROW);
+    drawRow(r,y,ROW,FONT,C.text);
+    x.strokeStyle=C.line; x.lineWidth=1;
+    x.beginPath(); x.moveTo(PAD,y+.5); x.lineTo(PAD+tableW,y+.5); x.stroke();
+    y+=ROW;
+  });
+  x.strokeStyle=C.line;
+  x.strokeRect(PAD+.5,TOP+.5,tableW-1,HEAD+rows.length*ROW-1);
+
+  x.fillStyle=C.muted; x.font=SUB;
+  x.fillText('Storm Manager · '+new Date().toLocaleDateString(),PAD,y+16);
+
+  c.toBlob(blob=>{
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),4000);
+  },'image/png');
+}
+
+window.resPng=function(mode,which){
+  const Cap=mode==='canyon'?'Canyon':'Desert';
+  const host=document.getElementById('res'+RES_PANEL[which]+Cap);
+  const table=host&&host.querySelector('table');
+  if(!table){ toast('Nothing to download yet','err'); return; }
+  const stamp=new Date().toISOString().slice(0,10);
+  try{
+    tableToPng(table,
+      RES_MODE_NAME[mode]+' — '+RES_PANEL[which],
+      (resReports(mode).length)+' match(es) imported',
+      mode+'-'+which+'-'+stamp+'.png');
+    toast('PNG downloaded');
+  }catch(e){ toast(e.message,'err'); }
+};
 
 window.doImportResults=function(mode){
   const Cap=mode==='canyon'?'Canyon':'Desert';
