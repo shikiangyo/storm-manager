@@ -29,9 +29,6 @@
   th.res-sort{cursor:pointer;user-select:none;white-space:nowrap}
   th.res-sort:hover{color:var(--accent2)}
   th.res-sort.on{color:var(--accent)}
-  .res-drop{border:1px dashed var(--border);border-radius:10px;padding:14px;margin-bottom:10px;transition:border-color .15s,background .15s}
-  .res-drop.over{border-color:var(--accent2);background:var(--panel2)}
-  .res-drop code{font-size:11px;color:var(--muted)}
   th{text-align:left;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px}
   td{padding:6px 8px;border-bottom:1px solid #262d3b}
   tr:hover td{background:#20263300}
@@ -100,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-18 20:59 UTC · results v7 (config.db reader, pair columns)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-18 21:28 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -298,7 +295,7 @@
 <section id="tab-rescanyon" style="display:none">
   <div class="panel">
     <h2>Canyon Storm results</h2>
-    <p class="help">Scores come straight from the in-game result mails, read off the PC that plays. Easiest way in: drop that PC's <code>config.db</code> on the box below and it is read right here in your browser. You can also paste JSON from the reader app: either one match or the combined <code>storm_results.json</code> — both work, and re-pasting something already here just refreshes it. Importing also fills in attendance on the History tab: anyone picked who doesn't appear in a result is marked a no-show. <b>Locked events are never touched</b> &mdash; unlock one there first if you want results applied to it. Only rows still showing as pending are filled in silently; if a result disagrees with a mark you've already set, you're asked before anything changes.</p>
+    <p class="help">Scores come straight from the in-game result mails, read off the PC that plays (reader app, Event results tab &rarr; Copy all, or <code>event_reports.py --bundle</code>). Paste below: either one match's JSON or the combined <code>storm_results.json</code> — both work, and re-pasting something already here just refreshes it. Importing also fills in attendance on the History tab: anyone picked who doesn't appear in a result is marked a no-show. <b>Locked events are never touched</b> &mdash; unlock one there first if you want results applied to it. Only rows still showing as pending are filled in silently; if a result disagrees with a mark you've already set, you're asked before anything changes.</p>
     <div id="resImportCanyon"></div>
   </div>
   <div class="panel"><div class="res-head"><h2>Record</h2><button class="mini" onclick="resPng('canyon','record')">⬇ Download PNG</button></div><div id="resRecordCanyon"></div></div>
@@ -308,7 +305,7 @@
 <section id="tab-resdesert" style="display:none">
   <div class="panel">
     <h2>Desert Storm results</h2>
-    <p class="help">Same importer as the Canyon tab, and one <code>config.db</code> (or one combined file) covers both modes — so you only need to do this on one of the two tabs. A single Desert match's JSON works too.</p>
+    <p class="help">Same importer as the Canyon tab — the combined file covers both modes, so one paste does the lot. A single Desert match's JSON works too.</p>
     <div id="resImportDesert"></div>
   </div>
   <div class="panel"><div class="res-head"><h2>Record</h2><button class="mini" onclick="resPng('desert','record')">⬇ Download PNG</button></div><div id="resRecordDesert"></div></div>
@@ -4929,30 +4926,11 @@ function renderResults(mode){
 
   // ---- import box (same importer on both tabs) ----
   const imp=document.getElementById('resImport'+Cap);
-  if(imp){
-    imp.innerHTML=
-      '<div class="res-drop" id="resDrop'+Cap+'">'+
-        '<div><b>Drop a <code>config.db</code> here</b> \u2014 or '+
-          '<button class="mini" id="resPick'+Cap+'">choose a file</button>'+
-          '<input type="file" id="resFile'+Cap+'" accept=".db" style="display:none">'+
-          '<span style="margin-left:14px">Alliance <input id="resAbbr'+Cap+
-            '" value="'+esc(resAbbr())+'" size="4" style="width:60px;padding:4px 6px"></span>'+
-        '</div>'+
-        '<div class="muted" style="font-size:12px;margin-top:8px;line-height:1.5">'+
-          'That\'s the game\'s mail database, on the PC that plays:<br>'+
-          '<code>%USERPROFILE%\\AppData\\LocalLow\\FunFly\\Last War-Survival Game\\config.db</code><br>'+
-          'It is read here in your browser and <b>never uploaded anywhere</b> \u2014 nothing leaves '+
-          'this computer, and nothing is stored until you press Import. Someone else can open this '+
-          'page, drop their own file and press Copy JSON without changing anything here.'+
-        '</div>'+
-      '</div>'+
-      '<textarea id="resPaste'+Cap+'" rows="4" style="width:100%" placeholder="\u2026or paste storm_results.json here"></textarea>'+
-      '<div class="row" style="margin-top:8px">'+
-        '<button class="btn admin-only" onclick="doImportResults(\''+mode+'\')">Import results</button> '+
-        '<button class="mini" id="resCopy'+Cap+'">Copy JSON</button> '+
-        '<span class="muted" id="resMsg'+Cap+'"></span></div>';
-    resWireImport(mode,Cap);
-  }
+  if(imp) imp.innerHTML=
+    '<textarea id="resPaste'+Cap+'" rows="4" style="width:100%" placeholder="Paste storm_results.json here"></textarea>'+
+    '<div class="row" style="margin-top:8px">'+
+      '<button class="btn admin-only" onclick="doImportResults(\''+mode+'\')">Import results</button> '+
+      '<span class="muted" id="resMsg'+Cap+'"></span></div>';
 
   // ---- record ----
   const box=document.getElementById('resRecord'+Cap);
@@ -5220,281 +5198,6 @@ window.resPng=function(mode,which){
   }catch(e){ toast(e.message,'err'); }
 };
 
-
-/* ================= reading config.db in the browser =======================
-   The game's mail database is an ordinary SQLite file. Rather than making
-   anyone install Python to get their results out, this reads the file straight
-   from disk in the browser — drag it onto the page and that's it. The file is
-   never uploaded: everything below runs on your own machine.
-
-   What follows is a minimal READ-ONLY SQLite reader: the file header, the
-   table b-tree (leaf and interior pages), record decoding, and overflow chains
-   — which matter, because a result mail's JSON runs to tens of KB while a page
-   is 4KB. Indexes, WAL and writing are not implemented and not needed.
-   Verified against the real 8MB config.db: same 8,384 rows and byte-identical
-   report output to the Python version. ------------------------------------ */
-function resReadSqlite(bytes){
-  const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
-  if(String.fromCharCode.apply(null,bytes.slice(0,15))!=='SQLite format 3')
-    throw new Error('That is not a SQLite database file — look for config.db');
-  let pageSize=dv.getUint16(16);
-  if(pageSize===1) pageSize=65536;
-  const usable=pageSize-bytes[20];
-  const page=n=>bytes.subarray((n-1)*pageSize,n*pageSize);   // pages are 1-based
-
-  function varint(buf,off){                     // 1..9 bytes, 7 bits each
-    let v=0n;
-    for(let i=0;i<8;i++){
-      const b=buf[off+i];
-      if(b&0x80) v=(v<<7n)|BigInt(b&0x7f);
-      else return [(v<<7n)|BigInt(b),off+i+1];
-    }
-    return [(v<<8n)|BigInt(buf[off+8]),off+9];  // the 9th byte gives all 8 bits
-  }
-
-  function payload(buf,off,P){                  // follow the overflow chain
-    const X=usable-35;                          // most that fits in a table leaf
-    let local=P;
-    if(P>X){
-      const M=Math.floor((usable-12)*32/255)-23;
-      const K=M+((P-M)%(usable-4));
-      local=K<=X?K:M;
-    }
-    const out=new Uint8Array(P);
-    out.set(buf.subarray(off,off+local),0);
-    let done=local;
-    if(done<P){
-      const bv=new DataView(buf.buffer,buf.byteOffset,buf.byteLength);
-      let next=bv.getUint32(off+local);
-      while(next&&done<P){
-        const pg=page(next);
-        const pv=new DataView(pg.buffer,pg.byteOffset,pg.byteLength);
-        const take=Math.min(usable-4,P-done);
-        out.set(pg.subarray(4,4+take),done);
-        done+=take;
-        next=pv.getUint32(0);
-      }
-    }
-    return out;
-  }
-
-  const dec=new TextDecoder('utf-8');
-  function record(rec){
-    let hv=varint(rec,0), end=Number(hv[0]), p=hv[1];
-    const types=[];
-    while(p<end){ const t=varint(rec,p); types.push(Number(t[0])); p=t[1]; }
-    let b=end;
-    const rv=new DataView(rec.buffer,rec.byteOffset,rec.byteLength);
-    return types.map(t=>{
-      if(t===0) return null;
-      if(t>=1&&t<=6){
-        const n=[0,1,2,3,4,6,8][t];
-        let v=0n; const neg=rec[b]&0x80;
-        for(let i=0;i<n;i++) v=(v<<8n)|BigInt(rec[b+i]);
-        if(neg) v-=(1n<<BigInt(n*8));           // stored two's-complement
-        b+=n; return Number(v);
-      }
-      if(t===7){ const v=rv.getFloat64(b); b+=8; return v; }
-      if(t===8) return 0;
-      if(t===9) return 1;
-      const len=Math.floor((t-(t%2?13:12))/2);
-      const sl=rec.subarray(b,b+len); b+=len;
-      return t%2?dec.decode(sl):sl;             // odd = TEXT, even = BLOB
-    });
-  }
-
-  function walkTree(root,out,seen){
-    seen=seen||{};
-    if(root<1||seen[root]) return out;          // a damaged file could loop
-    seen[root]=1;
-    const pg=page(root);
-    const hdr=root===1?100:0;                   // page 1 carries the file header
-    const pv=new DataView(pg.buffer,pg.byteOffset,pg.byteLength);
-    const type=pg[hdr], nCells=pv.getUint16(hdr+3);
-    const cellStart=hdr+((type===0x05||type===0x02)?12:8);
-    for(let i=0;i<nCells;i++){
-      const off=pv.getUint16(cellStart+i*2);
-      if(type===0x0d){                          // leaf table page
-        const sz=varint(pg,off), rid=varint(pg,sz[1]);
-        out.push(record(payload(pg,rid[1],Number(sz[0]))));
-      } else if(type===0x05){                   // interior table page
-        walkTree(pv.getUint32(off),out,seen);
-      }
-    }
-    if(type===0x05) walkTree(pv.getUint32(hdr+8),out,seen);   // rightmost child
-    return out;
-  }
-
-  const master=walkTree(1,[]);                  // sqlite_master is always page 1
-  return {
-    table:function(name){
-      const row=master.find(r=>r[0]==='table'&&r[1]===name);
-      if(!row) throw new Error('No "'+name+'" table in that file — is it the game\'s config.db?');
-      const sql=String(row[4]||'');
-      const inner=sql.slice(sql.indexOf('(')+1,sql.lastIndexOf(')'));
-      const cols=[]; let depth=0,cur='';
-      for(const ch of inner){                   // split on top-level commas only
-        if(ch==='(') depth++;
-        if(ch===')') depth--;
-        if(ch===','&&!depth){ cols.push(cur); cur=''; } else cur+=ch;
-      }
-      cols.push(cur);
-      const names=cols.map(c=>{
-        const m=c.trim().match(/^["`\[]?([A-Za-z_][\w$]*)["`\]]?/);
-        return m?m[1]:null;
-      }).filter(Boolean);
-      return walkTree(row[3],[]).map(v=>{
-        const o={}; names.forEach((n,i)=>o[n]=v[i]); return o;
-      });
-    }
-  };
-}
-
-/* ---- the same report shapes event_reports.py produces --------------------- */
-const RES_CANYON_TYPE=181, RES_DESERT_TYPE=109;
-const RES_MVP_LABELS={1:'total',2:'battle',3:'assistance',4:'strategy'};
-
-function resDbText(v){
-  if(v==null) return '';
-  return typeof v==='string'?v:new TextDecoder('utf-8').decode(v);
-}
-function resUtc(ms){ return new Date(ms).toISOString().slice(0,19)+'Z'; }
-
-function resCanyonRow(row,ABBR){
-  const obj=(JSON.parse(resDbText(row.contents))||{}).obj||{};
-  const ranks=(obj.ranks||[]).slice().sort((a,b)=>(b.score||0)-(a.score||0));
-  const role=obj.role;
-  const ours=obj[role===1?'landlord':'farmer']||{};
-  const theirs=obj[role===1?'farmer':'landlord']||{};
-  const mvp={};
-  for(const m of obj.mvp||[]){
-    mvp[RES_MVP_LABELS[m.type]||String(m.type)]=
-      {name:m.name,uid:m.uid,abbr:m.abbr,score:m.score};
-  }
-  const utc=resUtc(row.createTime);
-  return {id:row.uid,mode:'canyon',utc,date:utc.slice(0,10),slot:null,
-    side:role===1?'rulebringers':role===2?'dawnbreakers':null,
-    win:!!obj.isWin,ourScore:ours.score,theirScore:theirs.score,
-    ourMembers:ours.member,
-    opponents:(obj.alliances||[]).filter(a=>String(a.abbr||'').toUpperCase()!==ABBR)
-                                 .map(a=>({abbr:a.abbr,name:a.name})),
-    mvp,
-    players:ranks.map((r,i)=>({r:r,rank:i+1}))
-      .filter(x=>String(x.r.abbr||'').toUpperCase()===ABBR)
-      .map(x=>({uid:x.r.uid,name:x.r.name,rank:x.rank,
-        total:x.r.score||0,battle:x.r.battleScore||0,
-        assistance:x.r.cooperationScore||0,strategy:x.r.tacticsScore||0}))};
-}
-
-function resDesertRow(row,ABBR){
-  const obj=(JSON.parse(resDbText(row.contents))||{}).obj||{};
-  const alls=obj.alliances||[];
-  const ours=alls.find(a=>String(a.abbr||'').toUpperCase()===ABBR)||null;
-  const theirs=alls.find(a=>a!==ours)||null;
-  const mvp={};
-  [['killScoreMvp','kill'],['collectScoreMvp','collect'],
-   ['occupyScoreMvp','occupy'],['brokeScoreMvp','broke']].forEach(function(p){
-    const m=obj[p[0]];
-    if(m&&Object.keys(m).length) mvp[p[1]]={name:m.name,uid:m.uid,score:m.score};
-  });
-  const utc=resUtc(row.createTime);
-  return {id:row.uid,mode:'desert',utc,date:utc.slice(0,10),
-    // 11:30 UTC = the noon session, 20:30 UTC = the evening one
-    slot:new Date(row.createTime).getUTCHours()<15?'noon':'evening',
-    side:null,win:obj.result===1,
-    ourScore:ours?ours.score:undefined,theirScore:theirs?theirs.score:undefined,
-    opponents:alls.filter(a=>a!==ours).map(a=>({abbr:a.abbr,name:a.name})),
-    mvp,
-    players:(obj.ranks||[]).filter(r=>String(r.abbr||'').toUpperCase()===ABBR)
-      .map(r=>({uid:r.uid,name:r.name,rank:r.rank,score:r.score||0}))};
-}
-
-function resBuildBundle(rows,abbr){
-  const ABBR=String(abbr||'1GN').toUpperCase();
-  const reports=[]; let skipped=0;
-  const ofType=t=>rows.filter(r=>r.type===t)
-                      .sort((a,b)=>(a.createTime||0)-(b.createTime||0));
-  for(const row of ofType(RES_CANYON_TYPE)){
-    try{ reports.push(resCanyonRow(row,ABBR)); }catch(e){ skipped++; }
-  }
-  for(const row of ofType(RES_DESERT_TYPE)){
-    try{ reports.push(resDesertRow(row,ABBR)); }catch(e){ skipped++; }
-  }
-  reports.sort((a,b)=>a.utc<b.utc?-1:a.utc>b.utc?1:0);
-  return {kind:'lastwar-storm-results',version:1,alliance:abbr,
-          exported:resUtc(Date.now()),reports,skipped};
-}
-
-/* Which alliance to keep. Whatever the last import used, else 1GN. */
-function resAbbr(){
-  const any=Object.values((db.results&&db.results.reports)||{})[0];
-  return (db.results&&db.results.alliance)||(any&&any.alliance)||'1GN';
-}
-
-async function resReadDbFile(mode,file){
-  const Cap=mode==='canyon'?'Canyon':'Desert';
-  const say=t=>{ const m=document.getElementById('resMsg'+Cap); if(m) m.textContent=t; };
-  const ta=document.getElementById('resPaste'+Cap);
-  say('Reading '+file.name+' ('+Math.round(file.size/1048576*10)/10+' MB)…');
-  try{
-    const bytes=new Uint8Array(await file.arrayBuffer());
-    const abbr=(document.getElementById('resAbbr'+Cap)||{}).value||resAbbr();
-    const bundle=resBuildBundle(resReadSqlite(bytes).table('MailData'),abbr.trim());
-    const n=bundle.reports.length;
-    if(!n){
-      if(ta) ta.value='';
-      say('No Canyon or Desert result mails in that file. The game only keeps '+
-          'mails that haven\'t been deleted.');
-      return;
-    }
-    db.results=db.results||{}; db.results.alliance=abbr.trim();
-    if(ta) ta.value=JSON.stringify(bundle,null,2);
-    const dates=bundle.reports.map(r=>r.date);
-    const heads=bundle.reports.reduce((a,r)=>a+(r.players||[]).length,0);
-    if(!heads){
-      // the matches are there but nobody matched the tag, so it's the tag
-      say(n+' match'+(n===1?'':'es')+' found, but nobody tagged "'+abbr.trim()+
-          '" in any of them — check the Alliance box.');
-      return;
-    }
-    say(n+' match'+(n===1?'':'es')+' found ('+dates[0]+' to '+dates[n-1]+') — '+
-        (isAdmin()?'press Import results':'press Copy JSON and send it on'));
-  }catch(e){
-    if(ta) ta.value='';
-    say(e.message||'Could not read that file');
-  }
-}
-
-function resWireImport(mode,Cap){
-  const pick=document.getElementById('resPick'+Cap);
-  const file=document.getElementById('resFile'+Cap);
-  const drop=document.getElementById('resDrop'+Cap);
-  if(pick&&file) pick.onclick=()=>file.click();
-  if(file) file.onchange=e=>{
-    const f=e.target.files&&e.target.files[0];
-    if(f) resReadDbFile(mode,f);
-    file.value='';                      // so picking the same file again re-reads
-  };
-  if(drop){
-    drop.addEventListener('dragover',e=>{ e.preventDefault(); drop.classList.add('over'); });
-    drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
-    drop.addEventListener('drop',e=>{
-      e.preventDefault(); drop.classList.remove('over');
-      const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];
-      if(f) resReadDbFile(mode,f);
-    });
-  }
-  const copy=document.getElementById('resCopy'+Cap);
-  if(copy) copy.onclick=()=>{
-    const ta=document.getElementById('resPaste'+Cap);
-    const say=t=>{ const m=document.getElementById('resMsg'+Cap); if(m) m.textContent=t; };
-    if(!ta||!ta.value.trim()){ say('Nothing to copy yet — drop a config.db first'); return; }
-    ta.select();
-    navigator.clipboard.writeText(ta.value)
-      .then(()=>say('Copied — paste it to whoever keeps the records'))
-      .catch(()=>say('Press Ctrl+C to copy the selected text'));
-  };
-}
 
 window.doImportResults=function(mode){
   const Cap=mode==='canyon'?'Canyon':'Desert';
