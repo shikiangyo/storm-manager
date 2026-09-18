@@ -99,6 +99,8 @@
     <button data-tab="event" class="active">New Event</button>
     <button data-tab="csbuild">Storm Build</button>
     <button data-tab="history">History &amp; Attendance</button>
+    <button data-tab="rescanyon">Canyon Results</button>
+    <button data-tab="resdesert">Desert Results</button>
     <button data-tab="notes">Notes</button>
     <button data-tab="roster">Roster</button>
     <button data-tab="csplayers">Storm Players</button>
@@ -285,6 +287,26 @@
 </section>
 
 <!-- ============ NOTES TAB ============ -->
+<section id="tab-rescanyon" style="display:none">
+  <div class="panel">
+    <h2>Canyon Storm results</h2>
+    <p class="help">Scores come straight from the in-game result mails, exported by <code>event_reports.py --bundle</code> on the PC that plays. Paste the file's contents below. Importing also fills in attendance on the History tab: anyone picked who doesn't appear in a result is marked a no-show, and anything you've already set by hand is left alone.</p>
+    <div id="resImportCanyon"></div>
+  </div>
+  <div class="panel"><h2>Record</h2><div id="resRecordCanyon"></div></div>
+  <div class="panel"><h2>Players</h2><div id="resPlayersCanyon"></div></div>
+  <div class="panel"><h2>Matches</h2><div id="resMatchesCanyon"></div></div>
+</section>
+<section id="tab-resdesert" style="display:none">
+  <div class="panel">
+    <h2>Desert Storm results</h2>
+    <p class="help">Same import as the Canyon tab — one paste covers both modes, so you only need to do it once.</p>
+    <div id="resImportDesert"></div>
+  </div>
+  <div class="panel"><h2>Record</h2><div id="resRecordDesert"></div></div>
+  <div class="panel"><h2>Players</h2><div id="resPlayersDesert"></div></div>
+  <div class="panel"><h2>Matches</h2><div id="resMatchesDesert"></div></div>
+</section>
 <section id="tab-notes" style="display:none">
   <div class="panel">
     <h2>Notes</h2>
@@ -499,6 +521,9 @@ function migrate(d){
   })();
   d.cs.assign=d.cs.assign||{};
   d.cs.lastsub=d.cs.lastsub||{};
+  // ---- imported match results (Canyon / Desert result mails) ----
+  d.results=d.results||{};
+  d.results.reports=d.results.reports||{};
   d.notes=Array.isArray(d.notes)?d.notes:[];
   d.settings=d.settings||{banDays:21};
   if(d.settings.banDays===14) d.settings.banDays=21; // ban policy updated to 3 weeks
@@ -539,7 +564,7 @@ function recomputeDerived(){
         }
       }
     }
-    for(const n of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...(ev.waitlist||[]),...(ev.notAvailable||[]),...(ev.banned||[])]){
+    for(const n of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...(ev.waitlist||[,'doImportResults']),...(ev.notAvailable||[]),...(ev.banned||[])]){
       const key=resolveKey(n); if(!key) continue;
       const p=db.players[key];
       if(!p.lastApplied[mode]||p.lastApplied[mode]<ev.date) p.lastApplied[mode]=ev.date;
@@ -821,6 +846,8 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.tab==='roster') renderRoster();
   if(b.dataset.tab==='squads') renderSquadTab();
   if(b.dataset.tab==='history') renderEvents();
+  if(b.dataset.tab==='rescanyon') renderResults('canyon');
+  if(b.dataset.tab==='resdesert') renderResults('desert');
   if(b.dataset.tab==='settings') document.getElementById('setBanDays').value=db.settings.banDays;
   if(b.dataset.tab==='notes') renderNotes();
   if(b.dataset.tab==='csplayers') renderCsPlayers();
@@ -4532,6 +4559,253 @@ for(const id of ['csAdd','csImport']){
 if(KILL_TRACKER_THP_FEED_URL){
   const btn=document.getElementById('csSyncThp'); if(btn) btn.style.display='';
 }
+/* ================= imported storm results =================
+   Fed by event_reports.py --bundle, which reads the game's own mail database
+   (config.db, MailData rows: type 181 = Canyon, type 109 = Desert) and writes
+   one JSON file. Nothing here talks to the game or the network; it only takes
+   a pasted file.
+
+   Canyon carries four score types (total / battle / assistance / strategy) and
+   a side: role 1 = Rulebringers (one team of 20), role 2 = Dawnbreakers (two
+   teams). Desert carries a single score per player and two sessions a night
+   (noon / evening). ------------------------------------------------------- */
+const RES_MODE_NAME={canyon:'Canyon Storm',desert:'Desert Storm'};
+
+function resReports(mode){
+  return Object.values((db.results&&db.results.reports)||{})
+    .filter(r=>r&&r.mode===mode)
+    .sort((a,b)=>a.utc<b.utc?1:-1);
+}
+// A result row -> roster key. uid is permanent, so it wins; fall back to the
+// name (which resolveKey already checks against aliases).
+function resKey(p){
+  if(!p) return null;
+  return (p.uid&&resolveKeyByUid(p.uid))||resolveKey(p.name||'')||null;
+}
+function resLabel(p){ const k=resKey(p); return k?db.players[k].name:(p&&p.name)||'?'; }
+function resIdent(p){ return resKey(p)||('name:'+norm((p&&p.name)||'')); }
+const nfmt=n=>(n==null?'—':Number(n).toLocaleString());
+
+function importResultsBundle(text){
+  let bundle;
+  try{ bundle=JSON.parse(text); }
+  catch(e){ throw new Error('That does not look like JSON'); }
+  if(!bundle||bundle.kind!=='lastwar-storm-results'||!Array.isArray(bundle.reports))
+    throw new Error('Not a storm results file (expected kind "lastwar-storm-results")');
+  db.results=db.results||{}; db.results.reports=db.results.reports||{};
+  let added=0,updated=0;
+  for(const r of bundle.reports){
+    if(!r||!r.id) continue;
+    if(db.results.reports[r.id]) updated++; else added++;
+    db.results.reports[r.id]=r;
+  }
+  const att=applyAttendanceFromResults();
+  recomputeDerived();          // refresh no-show counts / bans from the new attendance
+  save();
+  return Object.assign({added,updated},att);
+}
+
+/* Match each result to an event slot and fill in attendance.
+   Which slot a report belongs to is decided by comparing who actually played
+   against who was picked in each slot, so the two Canyon matches on a Thursday
+   land the right way round without relying on their order. A slot the export
+   already knows (Desert's noon/evening) is trusted when it fits. */
+function applyAttendanceFromResults(){
+  const out={matched:0,attended:0,noshows:0,skipped:[]};
+  const groups={};
+  for(const r of resReports('canyon').concat(resReports('desert'))){
+    const k=r.mode+'|'+r.date; (groups[k]=groups[k]||[]).push(r);
+  }
+  for(const gk of Object.keys(groups)){
+    const [mode,date]=gk.split('|');
+    const reps=groups[gk];
+    const ev=(db.events||[]).find(e=>e.mode===mode&&e.date===date);
+    if(!ev||!ev.teams){ out.skipped.push(RES_MODE_NAME[mode]+' '+date+' — no matching event'); continue; }
+    const slots=['noon','evening'].filter(x=>Array.isArray(ev.teams[x])&&ev.teams[x].length);
+    if(!slots.length){ out.skipped.push(RES_MODE_NAME[mode]+' '+date+' — event has no teams'); continue; }
+
+    const playedSet=r=>new Set((r.players||[]).map(resIdent));
+    const pickKey=m=>resolveKey(m.name)||('name:'+norm(m.name||''));
+    const overlap=(r,slot)=>{
+      const set=playedSet(r); let n=0;
+      for(const m of ev.teams[slot]) if(set.has(pickKey(m))) n++;
+      return n;
+    };
+
+    // candidate assignments of reports -> slots
+    let cands=[];
+    if(reps.length>1&&slots.length>1){
+      cands=[[[reps[0],slots[0]],[reps[1],slots[1]]],
+             [[reps[0],slots[1]],[reps[1],slots[0]]]];
+    }else if(reps.length===1){
+      cands=slots.map(sl=>[[reps[0],sl]]);
+    }else{
+      cands=reps.map(r=>[[r,slots[0]]]);
+    }
+    let best=null,bestScore=-1;
+    for(const c of cands){
+      const sc=c.reduce((a,[r,sl])=>a+overlap(r,sl),0);
+      if(sc>bestScore){ bestScore=sc; best=c; }
+    }
+    for(const [r,slot] of best){
+      r.slot=slot; out.matched++;
+      const set=playedSet(r);
+      for(const m of ev.teams[slot]){
+        if(m.attended===true||m.attended===false) continue;   // keep manual edits
+        if(set.has(pickKey(m))){ m.attended=true; out.attended++; }
+        else { m.attended=false; out.noshows++; }
+      }
+    }
+  }
+  return out;
+}
+
+function resultsStats(mode){
+  const reps=resReports(mode);
+  const by={};
+  for(const r of reps) for(const p of (r.players||[])){
+    const k=resIdent(p);
+    const e=by[k]=by[k]||{key:k,name:resLabel(p),uid:p.uid||null,inRoster:!!resKey(p),
+      matches:0,total:0,battle:0,assistance:0,strategy:0,score:0,best:0,ranks:[]};
+    e.matches++;
+    if(mode==='canyon'){
+      e.total+=p.total||0; e.battle+=p.battle||0;
+      e.assistance+=p.assistance||0; e.strategy+=p.strategy||0;
+      e.best=Math.max(e.best,p.total||0);
+    }else{
+      e.score+=p.score||0; e.best=Math.max(e.best,p.score||0);
+    }
+    if(p.rank) e.ranks.push(p.rank);
+  }
+  const players=Object.values(by).map(e=>{
+    const m=e.matches||1;
+    return Object.assign({},e,{
+      avgTotal:Math.round(e.total/m), avgBattle:Math.round(e.battle/m),
+      avgAssist:Math.round(e.assistance/m), avgStrategy:Math.round(e.strategy/m),
+      avgScore:Math.round(e.score/m),
+      avgRank:e.ranks.length?Math.round(e.ranks.reduce((a,b)=>a+b,0)/e.ranks.length*10)/10:null});
+  });
+  players.sort((a,b)=>mode==='canyon'?b.avgTotal-a.avgTotal:b.avgScore-a.avgScore);
+
+  const rec=list=>{
+    const n=list.length, w=list.filter(r=>r.win).length;
+    const us=list.reduce((a,r)=>a+(r.ourScore||0),0);
+    const them=list.reduce((a,r)=>a+(r.theirScore||0),0);
+    return {n,w,l:n-w,pct:n?Math.round(w/n*1000)/10:0,us,them,
+            avgUs:n?Math.round(us/n):0,avgThem:n?Math.round(them/n):0};
+  };
+  const record={all:rec(reps)};
+  if(mode==='canyon'){
+    record.rulebringers=rec(reps.filter(r=>r.side==='rulebringers'));
+    record.dawnbreakers=rec(reps.filter(r=>r.side==='dawnbreakers'));
+  }else{
+    record.noon=rec(reps.filter(r=>r.slot==='noon'));
+    record.evening=rec(reps.filter(r=>r.slot==='evening'));
+  }
+  return {reps,players,record};
+}
+
+function renderResults(mode){
+  const Cap=mode==='canyon'?'Canyon':'Desert';
+  const {reps,players,record}=resultsStats(mode);
+
+  // ---- import box (same importer on both tabs) ----
+  const imp=document.getElementById('resImport'+Cap);
+  if(imp) imp.innerHTML=
+    '<textarea id="resPaste'+Cap+'" rows="4" style="width:100%" placeholder="Paste storm_results.json here"></textarea>'+
+    '<div class="row" style="margin-top:8px">'+
+      '<button class="btn admin-only" onclick="doImportResults(\''+mode+'\')">Import results</button> '+
+      '<span class="muted" id="resMsg'+Cap+'"></span></div>';
+
+  // ---- record ----
+  const box=document.getElementById('resRecord'+Cap);
+  if(box){
+    const line=(label,r)=>!r||!r.n?'':
+      '<tr><td><b>'+esc(label)+'</b></td><td>'+r.w+'W – '+r.l+'L</td><td>'+r.pct+'%</td>'+
+      '<td>'+nfmt(r.us)+'</td><td>'+nfmt(r.them)+'</td>'+
+      '<td>'+nfmt(r.avgUs)+'</td><td>'+nfmt(r.avgThem)+'</td></tr>';
+    const rows=mode==='canyon'
+      ? line('Overall',record.all)+line('As Rulebringers (1 team)',record.rulebringers)+line('As Dawnbreakers (2 teams)',record.dawnbreakers)
+      : line('Overall',record.all)+line('Noon session',record.noon)+line('Evening session',record.evening);
+    box.innerHTML=reps.length
+      ? '<table class="grid"><thead><tr><th></th><th>Record</th><th>Win %</th>'+
+        '<th>Our score</th><th>Their score</th><th>Avg ours</th><th>Avg theirs</th></tr></thead>'+
+        '<tbody>'+rows+'</tbody></table>'
+      : '<p class="muted">No '+RES_MODE_NAME[mode]+' results imported yet.</p>';
+  }
+
+  // ---- players ----
+  const pel=document.getElementById('resPlayers'+Cap);
+  if(pel){
+    if(!players.length){ pel.innerHTML='<p class="muted">Nothing to show yet.</p>'; }
+    else if(mode==='canyon'){
+      pel.innerHTML='<table class="grid"><thead><tr><th>Player</th><th>Matches</th>'+
+        '<th>Avg total</th><th>Avg battle</th><th>Avg assist</th><th>Avg strategy</th>'+
+        '<th>Best</th><th>Avg rank</th></tr></thead><tbody>'+
+        players.map(p=>'<tr><td>'+esc(p.name)+(p.inRoster?'':' <span class="muted">(not in roster)</span>')+
+          '</td><td>'+p.matches+'</td><td>'+nfmt(p.avgTotal)+'</td><td>'+nfmt(p.avgBattle)+
+          '</td><td>'+nfmt(p.avgAssist)+'</td><td>'+nfmt(p.avgStrategy)+'</td><td>'+nfmt(p.best)+
+          '</td><td>'+(p.avgRank==null?'—':p.avgRank)+'</td></tr>').join('')+'</tbody></table>';
+    }else{
+      pel.innerHTML='<table class="grid"><thead><tr><th>Player</th><th>Matches</th>'+
+        '<th>Avg score</th><th>Best</th><th>Total</th><th>Avg rank</th></tr></thead><tbody>'+
+        players.map(p=>'<tr><td>'+esc(p.name)+(p.inRoster?'':' <span class="muted">(not in roster)</span>')+
+          '</td><td>'+p.matches+'</td><td>'+nfmt(p.avgScore)+'</td><td>'+nfmt(p.best)+
+          '</td><td>'+nfmt(p.score)+'</td><td>'+(p.avgRank==null?'—':p.avgRank)+'</td></tr>').join('')+
+        '</tbody></table>';
+    }
+  }
+
+  // ---- matches ----
+  const mel=document.getElementById('resMatches'+Cap);
+  if(mel){
+    mel.innerHTML=reps.length
+      ? '<table class="grid"><thead><tr><th>Date</th><th>'+(mode==='canyon'?'Side':'Session')+
+        '</th><th>Result</th><th>Our score</th><th>Their score</th><th>Opponent</th>'+
+        '<th>Players</th><th>Top scorer</th></tr></thead><tbody>'+
+        reps.map(r=>{
+          const opp=(r.opponents||[]).filter(o=>o&&o.abbr&&o.abbr.toUpperCase()!=='1GN')
+            .map(o=>o.abbr).join(', ')||'—';
+          const topP=(r.players||[]).slice().sort((a,b)=>
+            (mode==='canyon'?(b.total||0)-(a.total||0):(b.score||0)-(a.score||0)))[0];
+          const side=mode==='canyon'
+            ? (r.side==='rulebringers'?'Rulebringers':r.side==='dawnbreakers'?'Dawnbreakers':'—')
+            : (r.slot||'—');
+          return '<tr><td>'+esc(r.date)+'</td><td>'+esc(side)+'</td>'+
+            '<td>'+(r.win?'<span class="badge b-start">WIN</span>':'<span class="badge b-ban">LOSS</span>')+'</td>'+
+            '<td>'+nfmt(r.ourScore)+'</td><td>'+nfmt(r.theirScore)+'</td><td>'+esc(opp)+'</td>'+
+            '<td>'+((r.players||[]).length)+'</td>'+
+            '<td>'+(topP?esc(resLabel(topP))+' · '+nfmt(mode==='canyon'?topP.total:topP.score):'—')+'</td></tr>';
+        }).join('')+'</tbody></table>'
+      : '';
+  }
+}
+
+window.doImportResults=function(mode){
+  const Cap=mode==='canyon'?'Canyon':'Desert';
+  const ta=document.getElementById('resPaste'+Cap);
+  // re-looked-up each time: renderResults() rebuilds the import box, so a
+  // reference taken before the render would point at a discarded element
+  const say=t=>{ const m=document.getElementById('resMsg'+Cap); if(m) m.textContent=t; };
+  const text=(ta&&ta.value||'').trim();
+  if(!text){ say('Paste the file contents first.'); return; }
+  try{
+    const r=importResultsBundle(text);
+    const bits=[r.added+' new report'+(r.added===1?'':'s')];
+    if(r.updated) bits.push(r.updated+' refreshed');
+    if(r.matched) bits.push(r.matched+' matched to events ('+r.attended+' present, '+r.noshows+' no-show'+(r.noshows===1?'':'s')+')');
+    if(r.skipped&&r.skipped.length){
+      // usually just history from before the event was created here — keep it short
+      const sk=r.skipped.slice(0,3).join('; ');
+      bits.push('not matched: '+sk+(r.skipped.length>3?' (+'+(r.skipped.length-3)+' more)':''));
+    }
+    toast('Results imported');
+    renderResults('canyon'); renderResults('desert'); renderEvents(); renderRoster();
+    say(bits.join(' · '));   // after the render, or it gets wiped
+  }catch(e){ say(e.message); toast(e.message,'err'); }
+};
+
+
 renderCsPlayers(); renderCsBuildTab(); renderCsSetup();
 
 </script>
