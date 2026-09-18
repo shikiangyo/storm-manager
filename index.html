@@ -300,7 +300,7 @@
   </div>
   <div class="panel"><div class="res-head"><h2>Record</h2><button class="mini" onclick="resPng('canyon','record')">⬇ Download PNG</button></div><div id="resRecordCanyon"></div></div>
   <div class="panel"><div class="res-head"><h2>Players</h2><button class="mini" onclick="resPng('canyon','players')">⬇ Download PNG</button></div><p class="help" style="margin-top:0">Click any heading to sort by it; click it again to flip the order.</p><div id="resPlayersCanyon"></div></div>
-  <div class="panel"><div class="res-head"><h2>Matches</h2><button class="mini" onclick="resPng('canyon','matches')">⬇ Download PNG</button></div><div id="resMatchesCanyon"></div></div>
+  <div class="panel"><div class="res-head"><h2>Matches</h2><div class="row" style="margin:0"><button class="mini admin-only" onclick="resDeleteAll('canyon')">Remove all</button><button class="mini" onclick="resPng('canyon','matches')">⬇ Download PNG</button></div></div><div id="resMatchesCanyon"></div></div>
 </section>
 <section id="tab-resdesert" style="display:none">
   <div class="panel">
@@ -310,7 +310,7 @@
   </div>
   <div class="panel"><div class="res-head"><h2>Record</h2><button class="mini" onclick="resPng('desert','record')">⬇ Download PNG</button></div><div id="resRecordDesert"></div></div>
   <div class="panel"><div class="res-head"><h2>Players</h2><button class="mini" onclick="resPng('desert','players')">⬇ Download PNG</button></div><p class="help" style="margin-top:0">Click any heading to sort by it; click it again to flip the order.</p><div id="resPlayersDesert"></div></div>
-  <div class="panel"><div class="res-head"><h2>Matches</h2><button class="mini" onclick="resPng('desert','matches')">⬇ Download PNG</button></div><div id="resMatchesDesert"></div></div>
+  <div class="panel"><div class="res-head"><h2>Matches</h2><div class="row" style="margin:0"><button class="mini admin-only" onclick="resDeleteAll('desert')">Remove all</button><button class="mini" onclick="resPng('desert','matches')">⬇ Download PNG</button></div></div><div id="resMatchesDesert"></div></div>
 </section>
 <section id="tab-notes" style="display:none">
   <div class="panel">
@@ -569,7 +569,7 @@ function recomputeDerived(){
         }
       }
     }
-    for(const n of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...(ev.waitlist||[,'doImportResults']),...(ev.notAvailable||[]),...(ev.banned||[])]){
+    for(const n of [...ev.teams.noon.map(m=>m.name),...ev.teams.evening.map(m=>m.name),...(ev.waitlist||[]),...(ev.notAvailable||[]),...(ev.banned||[])]){
       const key=resolveKey(n); if(!key) continue;
       const p=db.players[key];
       if(!p.lastApplied[mode]||p.lastApplied[mode]<ev.date) p.lastApplied[mode]=ev.date;
@@ -2753,7 +2753,7 @@ suppressSave=true; recomputeDerived(); suppressSave=false;
 for(const n of ['delApp','setAvail','dropMember','removeMember','removeWait','removeNa','promoteTo',
   'evToggleTap','setGuar','uiRename','uiMerge','clearBan','uiBan','startBanEdit','saveBanAdjust','delPlayer','resolveReview','removeReview',
   'markAtt','setBanLen','setAttNote','markAll','applyBans','delEvent','unlockEvent','switchMode',
-  'sqAssign','sqMove','sqRename','sqSetCap','sqDelObj','sqAutoFill']){
+  'sqAssign','sqMove','sqRename','sqSetCap','sqDelObj','sqAutoFill','doImportResults','resDelete','resDeleteAll']){
   const f=window[n];
   if(typeof f==='function') window[n]=function(){
     if(!isAdmin()){ toast('View only — log in as admin to make changes','err'); return; }
@@ -4878,7 +4878,9 @@ function renderResults(mode){
     mel.innerHTML=reps.length
       ? '<table class="grid"><thead><tr><th>Date</th><th>'+(mode==='canyon'?'Side':'Session')+
         '</th><th>Result</th><th>Our score</th><th>Their score</th><th>Opponent</th>'+
-        '<th>Players</th><th>Top scorer</th></tr></thead><tbody>'+
+        '<th>Players</th><th>Top scorer</th>'+
+        // no-export keeps this column out of the downloaded PNG
+        '<th class="no-export"></th></tr></thead><tbody>'+
         reps.map(r=>{
           const opp=(r.opponents||[]).filter(o=>o&&o.abbr&&o.abbr.toUpperCase()!=='1GN')
             .map(o=>o.abbr).join(', ')||'—';
@@ -4891,7 +4893,9 @@ function renderResults(mode){
             '<td>'+(r.win?'<span class="badge b-start">WIN</span>':'<span class="badge b-ban">LOSS</span>')+'</td>'+
             '<td>'+nfmt(r.ourScore)+'</td><td>'+nfmt(r.theirScore)+'</td><td>'+esc(opp)+'</td>'+
             '<td>'+((r.players||[]).length)+'</td>'+
-            '<td>'+(topP?esc(resLabel(topP))+' · '+nfmt(mode==='canyon'?topP.total:topP.score):'—')+'</td></tr>';
+            '<td>'+(topP?esc(resLabel(topP))+' · '+nfmt(mode==='canyon'?topP.total:topP.score):'—')+'</td>'+
+            '<td class="no-export"><button class="mini admin-only" title="Delete this result" '+
+              'onclick="resDelete(\''+mode+'\',\''+esc(String(r.id))+'\')">🗑</button></td></tr>';
         }).join('')+'</tbody></table>'
       : '';
   }
@@ -4906,9 +4910,11 @@ const RES_PANEL={record:'Record',players:'Players',matches:'Matches'};
 
 function tableToPng(table,title,subtitle,filename){
   const ths=[...table.querySelectorAll('thead th')];
-  const head=ths.map(th=>(th.dataset.label||th.textContent||'').trim());
+  // columns marked no-export (the delete buttons) are left out of the image
+  const keep=ths.map((th,i)=>th.classList.contains('no-export')?-1:i).filter(i=>i>=0);
+  const head=keep.map(i=>(ths[i].dataset.label||ths[i].textContent||'').trim());
   const rows=[...table.querySelectorAll('tbody tr')]
-    .map(tr=>[...tr.children].map(td=>(td.textContent||'').trim().replace(/\s+/g,' ')));
+    .map(tr=>keep.map(i=>((tr.children[i]||{}).textContent||'').trim().replace(/\s+/g,' ')));
   if(!rows.length) throw new Error('nothing to download yet');
 
   const C={bg:'#12151c',head:'#232a38',row:'#1b202b',alt:'#171c26',
@@ -4987,6 +4993,65 @@ function tableToPng(table,title,subtitle,filename){
     setTimeout(()=>URL.revokeObjectURL(url),4000);
   },'image/png');
 }
+
+/* ---- removing results ----------------------------------------------------
+   Nothing here touches the game or your mail, so anything deleted can be
+   imported again from the reader app. Attendance already written to an event
+   is a separate thing: deleting the result it came from doesn't silently
+   rewrite your History tab, but you're offered the option. */
+function resDescribe(r){
+  const side=r.side==='rulebringers'?'Rulebringers'
+            :r.side==='dawnbreakers'?'Dawnbreakers':(r.slot||'');
+  return RES_MODE_NAME[r.mode]+' '+r.date+(side?' ('+side+')':'')+
+         ' — '+(r.win?'WIN':'LOSS');
+}
+
+window.resDelete=function(mode,id){
+  const reports=(db.results&&db.results.reports)||{};
+  const r=reports[id];
+  if(!r){ toast('That result has already gone','err'); return; }
+  if(!confirm('Delete '+resDescribe(r)+'?\n\n'+
+              'It comes out of the record, the players table and the matches '+
+              'list. The game and your in-game mail are untouched, so you can '+
+              'import it again whenever you like.')) return;
+
+  let cleared=0;
+  const ev=(db.events||[]).find(e=>e.mode===r.mode&&e.date===r.date);
+  const slot=r.slot;
+  const team=ev&&ev.teams&&Array.isArray(ev.teams[slot])?ev.teams[slot]:null;
+  if(team&&!ev.locked){
+    // only offer this when no other result still covers that same slot
+    const others=Object.keys(reports).filter(k=>k!==id&&reports[k].mode===r.mode&&
+                    reports[k].date===r.date&&reports[k].slot===slot);
+    const marks=team.filter(m=>m.attended===true||m.attended===false).length;
+    if(marks&&!others.length&&confirm(
+        'Also clear that event\'s attendance?\n\n'+marks+' mark'+(marks===1?'':'s')+
+        ' on '+RES_MODE_NAME[r.mode]+' '+r.date+' ('+slot+') go back to pending.\n\n'+
+        'OK — clear them\nCancel — leave the attendance exactly as it is')){
+      for(const m of team) if(m.attended===true||m.attended===false){ m.attended=null; cleared++; }
+    }
+  }
+
+  delete db.results.reports[id];
+  if(cleared) recomputeDerived();     // no-show counts and bans follow the change
+  save();
+  renderResults('canyon'); renderResults('desert'); renderEvents(); renderRoster();
+  toast('Result deleted'+(cleared?' · '+cleared+' mark(s) back to pending':''));
+};
+
+window.resDeleteAll=function(mode){
+  const reps=resReports(mode);
+  if(!reps.length){ toast('Nothing to remove','err'); return; }
+  if(!confirm('Remove all '+reps.length+' '+RES_MODE_NAME[mode]+' result'+
+              (reps.length===1?'':'s')+'?\n\n'+
+              'Attendance already recorded on the History tab is left exactly '+
+              'as it is. '+(mode==='canyon'?'Desert':'Canyon')+' results are '+
+              'not affected. You can re-import at any time.')) return;
+  for(const r of reps) delete db.results.reports[r.id];
+  save();
+  renderResults(mode); renderEvents();
+  toast(reps.length+' result'+(reps.length===1?'':'s')+' removed');
+};
 
 window.resPng=function(mode,which){
   const Cap=mode==='canyon'?'Canyon':'Desert';
