@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-18 21:28 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-20 08:27 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -4672,9 +4672,13 @@ function importResultsBundle(text){
     if(ex) byMatch[resMatchKey(ex)]=k;
   }
 
-  let added=0,updated=0,dupes=0;
+  let added=0,updated=0,dupes=0,foreign=0;
   for(const r of reports){
     if(!r||!r.id) continue;
+    // A result with none of our players in it is somebody else's match — it can
+    // only arrive from a PC running several accounts, and it would otherwise
+    // join our record with believable-looking scores.
+    if(!(r.players||[]).length){ foreign++; continue; }
     if(db.results.reports[r.id]){          // same mail, re-pasted
       db.results.reports[r.id]=r; updated++; continue;
     }
@@ -4695,7 +4699,7 @@ function importResultsBundle(text){
   const att=applyAttendanceFromResults();
   recomputeDerived();          // refresh no-show counts / bans from the new attendance
   save();
-  return Object.assign({added,updated,dupes},att);
+  return Object.assign({added,updated,dupes,foreign},att);
 }
 
 /* What identifies a match, independent of whose mailbox it came from: when it
@@ -5212,6 +5216,7 @@ window.doImportResults=function(mode){
     const bits=[r.added+' new report'+(r.added===1?'':'s')];
     if(r.updated) bits.push(r.updated+' refreshed');
     if(r.dupes) bits.push(r.dupes+' already had (same match, another mailbox)');
+    if(r.foreign) bits.push(r.foreign+' ignored (not our matches)');
     if(r.matched){
       let m=r.matched+' matched to events ('+r.attended+' present, '+r.noshows+
             ' no-show'+(r.noshows===1?'':'s');
