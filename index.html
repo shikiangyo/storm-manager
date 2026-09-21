@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-21 15:01 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-21 15:06 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -1995,7 +1995,14 @@ function evTeamsSVG(A){
     green:'#3ecf8e',red:'#f05b5b',purple:'#a78bfa'};
   const fmtM=n=>n?(n>=1e6?(n/1e6).toFixed(n%1e6?1:0)+'m':(n/1e3).toFixed(0)+'k'):'—';
   const hasSubtitle=!!(A.dsStrength||A.canyonSplit==='priority');
-  const COLW=430, GAP=24, PAD=28, ROWH=22, TOP=hasSubtitle?96:72;
+  // Same quick-glance power strip as the on-screen "3 · Teams" panel (added
+  // 2026-09-21, Pete: "so I can quickly see if they are about even") — always
+  // shown, on a History-sourced export too, since it's computed live from
+  // each row's own power below rather than from A.dsStrength (which a saved
+  // History event never has — see evToAssignmentLike above).
+  const POWERBAR_H=52;
+  const baseTop=hasSubtitle?96:72;
+  const COLW=430, GAP=24, PAD=28, ROWH=22, TOP=baseTop+POWERBAR_H;
   const rowsOf=slot=>A.teams[slot].map((m,i)=>{
     const d=dsStrengthOf(m.name);
     return {i,name:m.name,starter:i<A.starters,guaranteed:m.guaranteed,grade:d.grade,power:d.power};
@@ -2054,11 +2061,29 @@ function evTeamsSVG(A){
        : (A.mode==='canyon'&&A.canyonSplit==='balanced') ? `${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} came out stronger — "both" voters dealt evenly by DS Ranking`
        : `${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} is the stronger side`)
     : A.canyonSplit==='priority' ? 'Team A (Noon) is the priority team' : '';
+  const totalNoon=noon.reduce((s,r)=>s+r.power,0), totalEve=evening.reduce((s,r)=>s+r.power,0);
+  const totalPower=totalNoon+totalEve;
+  const noonPct=totalPower?totalNoon/totalPower*100:50;
+  const diff=Math.abs(totalNoon-totalEve);
+  const diffPct=totalPower?Math.round(diff/totalPower*100):0;
+  const aheadLabel=diff===0?'Dead even':`${totalNoon>totalEve?'Noon':'Evening'} ahead by ${fmtM(diff)} (~${diffPct}%)`;
+  const barW=W-PAD*2, barY=baseTop+26, noonW=barW*noonPct/100;
+  const powerBar=`
+<text x="${PAD}" y="${baseTop+14}" font-family="Arial,sans-serif" font-size="13" fill="${EV.text}">☀️ Noon <tspan font-weight="700">${fmtM(totalNoon)}</tspan></text>
+<text x="${W/2}" y="${baseTop+14}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="${EV.muted}">${esc(aheadLabel)}</text>
+<text x="${W-PAD}" y="${baseTop+14}" text-anchor="end" font-family="Arial,sans-serif" font-size="13" fill="${EV.text}">🌙 Evening <tspan font-weight="700">${fmtM(totalEve)}</tspan></text>
+<clipPath id="pbclip"><rect x="${PAD}" y="${barY}" width="${barW}" height="10" rx="5"/></clipPath>
+<g clip-path="url(#pbclip)">
+<rect x="${PAD}" y="${barY}" width="${barW}" height="10" fill="${EV.border}"/>
+<rect x="${PAD}" y="${barY}" width="${noonW}" height="10" fill="${EV.accent2}"/>
+<rect x="${PAD+noonW}" y="${barY}" width="${barW-noonW}" height="10" fill="${EV.purple}"/>
+</g>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Arial,sans-serif">
 <rect x="0" y="0" width="${W}" height="${H}" fill="${EV.bg}"/>
 <rect x="0" y="0" width="${W}" height="4" fill="${EV.accent}"/>
 <text x="${PAD}" y="46" font-family="Arial,sans-serif" font-weight="700" font-size="24" fill="${EV.text}">${esc(modeLabel)} — ${esc(A.date)}</text>
 ${subtitle?`<text x="${PAD}" y="70" font-family="Arial,sans-serif" font-weight="700" font-size="13" fill="${EV.accent}">${esc(subtitle.toUpperCase())}</text>`:''}
+${powerBar}
 ${col('noon','☀️ NOON',EV.accent2,PAD)}
 ${col('evening','🌙 EVENING',EV.purple,PAD+COLW+GAP)}
 ${foot}
