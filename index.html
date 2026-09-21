@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-21 14:49 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-21 15:01 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -1658,10 +1658,24 @@ function runAssign(){
     }
   }
   // starter order within each team: guaranteed first, then longest since last
-  // START in this mode (never-started first); ties random via pre-shuffle
+  // START in this mode (never-started first); ties random via pre-shuffle.
+  // This decides WHO is a starter vs a sub — that never changes below.
   const startRank=m=>(getPlayer(m.name).lastStarted||{})[mode]||'0000-00-00';
   for(const s of ['noon','evening'])
     teams[s]=shuffle(teams[s]).sort((a,b)=>(b.guaranteed-a.guaranteed)||(startRank(a)<startRank(b)?-1:startRank(a)>startRank(b)?1:0));
+  const starters=+document.getElementById('evStarters').value||20;
+  // Display order within each of those two groups: strongest power first, so
+  // the two teams can be visually compared top-to-bottom — e.g. the strongest
+  // starter on Noon lines up against the strongest starter on Evening (Pete's
+  // ask, 2026-09-21). Who's a starter vs a sub is already fixed above by
+  // guaranteed/fairness — this only reorders within each of those two groups,
+  // never moves anyone across the starter/sub line.
+  for(const s of ['noon','evening']){
+    const byPower=(a,b)=>dsStrengthOf(b.name).power-dsStrengthOf(a.name).power;
+    const startersGroup=teams[s].slice(0,starters).sort(byPower);
+    const subsGroup=teams[s].slice(starters).sort(byPower);
+    teams[s]=[...startersGroup,...subsGroup];
+  }
   const fair={};
   for(const x of pool) fair[x.p.name]={refused:x.f.refused, walk:x.f.walk};
   // Roster members who never showed up in this batch of applications at all —
@@ -1670,7 +1684,7 @@ function runAssign(){
   // roster yet; Pete's fine with that overlap rather than trying to guess it.
   const appliedKeys=new Set(apps.map(a=>resolveKey(a.name)||norm(a.name)));
   const notVoted=Object.keys(db.players).filter(k=>!appliedKeys.has(k)).map(k=>db.players[k].name);
-  db.pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),notVoted,fair,fairDates:F.dates,dsStrength,canyonSplit,desertSplit:mode==='desert'?desertSplit:null};
+  db.pendingAssignment={mode,date,teamSize,starters,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),notVoted,fair,fairDates:F.dates,dsStrength,canyonSplit,desertSplit:mode==='desert'?desertSplit:null};
   save(); // shared with every other device — see db.pendingAssignment comment above
   renderAssignment();
 }
@@ -1706,10 +1720,41 @@ function renderAssignment(){
   // share with more people"). The grade still drives the actual placement
   // logic (dsCmp, strongerSideOf) — it's only hidden from every display, here
   // and in the PNG export / rank-by-rank breakdown below.
+  const showPower=A.mode==='desert' || (A.mode==='canyon'&&(A.canyonSplit==='priority'||A.canyonSplit==='balanced'));
   const dsBadge=name=>{
-    if(A.mode!=='desert' && !(A.mode==='canyon'&&(A.canyonSplit==='priority'||A.canyonSplit==='balanced'))) return '';
+    if(!showPower) return '';
     const d=dsStrengthOf(name);
     return `<span class="badge b-wait" title="Power">${fmtM(d.power)}</span> `;
+  };
+  /* ---------------------------------------------------------------------
+     Quick-glance power comparison, shown above everything else — Pete
+     wanted to be able to tell "are these about even?" at a look, without
+     reading the reasoning paragraph or expanding the rank-by-rank table
+     below. Sums each team's actual current power (same dsStrengthOf() the
+     rest of this screen uses), so it stays accurate through manual
+     drops/swaps/promotes too, not just the moment runAssign() ran.
+     --------------------------------------------------------------------- */
+  const powerCompareHtml=()=>{
+    if(!showPower) return '';
+    const totalNoon=A.teams.noon.reduce((s,m)=>s+dsStrengthOf(m.name).power,0);
+    const totalEve=A.teams.evening.reduce((s,m)=>s+dsStrengthOf(m.name).power,0);
+    const total=totalNoon+totalEve;
+    const noonPct=total?Math.round(totalNoon/total*100):50;
+    const evePct=100-noonPct;
+    const diff=Math.abs(totalNoon-totalEve);
+    const diffPct=total?Math.round(diff/total*100):0;
+    const aheadLabel=diff===0?'Dead even':`${totalNoon>totalEve?'Noon':'Evening'} ahead by ${fmtM(diff)} (~${diffPct}%)`;
+    return `<div style="margin-bottom:12px;padding:10px 14px;background:var(--panel2);border:1px solid var(--border);border-radius:8px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:13px">
+        <span>☀️ Noon <b>${fmtM(totalNoon)}</b></span>
+        <span class="muted" style="font-size:11px">${aheadLabel}</span>
+        <span>🌙 Evening <b>${fmtM(totalEve)}</b></span>
+      </div>
+      <div style="display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--border);margin-top:6px">
+        <div style="width:${noonPct}%;background:var(--accent2)"></div>
+        <div style="width:${evePct}%;background:var(--purple)"></div>
+      </div>
+    </div>`;
   };
   const teamHtml=(slot,label)=>{
     const list=A.teams[slot];
@@ -1791,6 +1836,7 @@ function renderAssignment(){
     highest-graded first, until Team A was full; everyone else went to Team B. Drag-free re-shuffling: use ↓/✕ on a
     team member and the waitlist's → buttons below if you want to move anyone by hand.</div></div>`:'';
   document.getElementById('assignResult').innerHTML=`
+    ${powerCompareHtml()}
     ${dsBanner}${canyonBanner}
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
     ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th>${wlHistHead}<th></th></tr>${wl}</table>`:''}
