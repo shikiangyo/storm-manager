@@ -530,6 +530,10 @@ function migrate(d){
   d.results=d.results||{};
   d.results.reports=d.results.reports||{};
   d.notes=Array.isArray(d.notes)?d.notes:[];
+  // Shared "3 · Teams" pending assignment (see the New Event tab) — lives on
+  // db so it syncs like everything else; null when nobody has an unsaved
+  // assignment pending right now.
+  if(d.pendingAssignment===undefined) d.pendingAssignment=null;
   d.settings=d.settings||{banDays:21};
   if(d.settings.banDays===14) d.settings.banDays=21; // ban policy updated to 3 weeks
   return d;
@@ -723,6 +727,7 @@ async function pullCloud(){
     if(!v&&auth.token&&Object.keys(db.players).length) await cloudSave(); // seed empty cloud from this device
     renderRoster(); renderEvents(); renderSquadTab(); renderAuthBar();
     renderCsPlayers(); renderCsBuildTab(); renderCsSetup(); renderNotes();
+    showPendingAssignment(); // pick up (or clear) any shared "3 · Teams" state from another device
   }catch(e){ toast('Could not load shared data: '+e.message,'err'); }
 }
 function toast(msg,err){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2600); }
@@ -848,6 +853,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   b.classList.add('active');
   document.querySelectorAll('main > section').forEach(s=>s.style.display='none');
   document.getElementById('tab-'+b.dataset.tab).style.display='';
+  if(b.dataset.tab==='event') showPendingAssignment(); // pick up any shared assignment another device set/cleared while we were away
   if(b.dataset.tab==='roster') renderRoster();
   if(b.dataset.tab==='squads') renderSquadTab();
   if(b.dataset.tab==='history') renderEvents();
@@ -861,9 +867,19 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
 });
 
 /* ================= applications ================= */
-let apps=[]; // {name, avail:'noon'|'evening'|'both'}
+let apps=[]; // {name, avail:'noon'|'evening'|'both'} — the pasted/uploaded applicant
+             // list stays device-local (nothing about it is stored on `db`): the
+             // shared, cross-device state a viewer needs is the *result* of
+             // running it, which lives at db.pendingAssignment (see runAssign()),
+             // not the raw voter list itself.
 let review=[]; // {name, raw} — applications with unrecognised availability
-let pendingAssignment=null;
+// db.pendingAssignment (default null, see migrate()) is the not-yet-saved team
+// assignment shown in "3 · Teams". It lives on `db` — not a bare local variable
+// — specifically so it round-trips through the existing save()/cloudSave()/
+// pullCloud() machinery like every other piece of shared state: once one
+// device pastes a poll export and teams appear, every other device polling
+// or loading sees the exact same panel (see showPendingAssignment()), and
+// whoever hits "Confirm & save event" clears it for everyone.
 // The New Event screen's STARTER/SUB badge is tap-to-select, tap-another-to-swap
 // (mirrors the same pattern on the Storm Build board) — {slot,i} of the first tap,
 // awaiting a second tap in the same team to swap positions (and so roles).
@@ -1025,7 +1041,7 @@ function addAppsResolvedObjs(items){
     toast(reviewed?`${reviewed} name${reviewed===1?'':'s'} need review — set noon/evening/both below`:(dupes?`No new names — ${dupes} duplicate${dupes===1?'':'s'} skipped`:'No applications found'),'err');
     return;
   }
-  if(!pendingAssignment){
+  if(!db.pendingAssignment){
     runAssign();
     toast(`${added} applicant${added===1?'':'s'} added and assigned`+(dupes?` (${dupes} duplicates skipped)`:'')+revMsg);
   } else if(confirm(`Teams are already formed. ${added} new applicant${added===1?'':'s'} added.\n\nOK — re-assign EVERYONE fairly with the new names included (manual edits are lost)\nCancel — keep current teams and put the new name${added===1?'':'s'} on the waitlist`)){
@@ -1351,7 +1367,7 @@ window.resolveReview=i=>{
 };
 window.removeReview=i=>{ review.splice(i,1); renderReview(); };
 function lateWaitlist(fresh){
-  const A=pendingAssignment;
+  const A=db.pendingAssignment;
   const rank=n=>getPlayer(n).lastSelected[A.mode]||'0000-00-00';
   // order the late batch by the same priority rules before appending
   fresh.sort((a,b)=>(getPlayer(b.name).guaranteed-getPlayer(a.name).guaranteed)||(rank(a.name)<rank(b.name)?-1:1));
@@ -1361,6 +1377,7 @@ function lateWaitlist(fresh){
     else if(isBanned(p,A.mode,A.date)) A.banned.push({name:p.name,until:p.banUntil[A.mode]});
     else A.waitlist.push({name:p.name,avail:a.avail,guaranteed:p.guaranteed});
   }
+  save();
   renderAssignment();
 }
 document.getElementById('csvFile').onchange=e=>{
@@ -1381,7 +1398,7 @@ document.getElementById('btnParsePaste').onclick=()=>{
   if(poll) applyPollImport(poll); else addApps(text.split(/\r?\n/));
   box.value='';
 };
-document.getElementById('btnClearApps').onclick=()=>{ apps=[]; review=[]; pendingAssignment=null; renderApps(); renderReview(); document.getElementById('assignResult').innerHTML=''; hideSaveButtons(); };
+document.getElementById('btnClearApps').onclick=()=>{ apps=[]; review=[]; db.pendingAssignment=null; save(); renderApps(); renderReview(); document.getElementById('assignResult').innerHTML=''; hideSaveButtons(); };
 
 function availBadge(a){ return a==='noon'?'<span class="badge b-noon">noon</span>':a==='evening'?'<span class="badge b-eve">evening</span>':a==='na'?'<span class="badge b-wait">not available</span>':'<span class="badge b-both">both</span>'; }
 
@@ -1402,7 +1419,7 @@ function shuffle(arr){ for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.r
 
 document.getElementById('btnAssign').onclick=()=>{
   if(!apps.length){ toast('No applications added yet','err'); return; }
-  if(pendingAssignment && !confirm('Re-run assignment? Manual changes (drops, promotes, role toggles, removals stay removed) will be redone from scratch.')) return;
+  if(db.pendingAssignment && !confirm('Re-run assignment? Manual changes (drops, promotes, role toggles, removals stay removed) will be redone from scratch.')) return;
   runAssign();
 };
 /* ---------------------------------------------------------------------
@@ -1622,12 +1639,13 @@ function runAssign(){
     teams[s]=shuffle(teams[s]).sort((a,b)=>(b.guaranteed-a.guaranteed)||(startRank(a)<startRank(b)?-1:startRank(a)>startRank(b)?1:0));
   const fair={};
   for(const x of pool) fair[x.p.name]={refused:x.f.refused, walk:x.f.walk};
-  pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),fair,fairDates:F.dates,dsStrength,canyonSplit,desertSplit:mode==='desert'?desertSplit:null};
+  db.pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),fair,fairDates:F.dates,dsStrength,canyonSplit,desertSplit:mode==='desert'?desertSplit:null};
+  save(); // shared with every other device — see db.pendingAssignment comment above
   renderAssignment();
 }
 
 function renderAssignment(){
-  const A=pendingAssignment; if(!A) return;
+  const A=db.pendingAssignment; if(!A) return;
   A.waitlist.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
   const history=name=>{
     const p=peekPlayer(name);
@@ -1733,34 +1751,58 @@ function renderAssignment(){
   document.getElementById('btnDownloadTeamsPng').style.display='';
 }
 function hideSaveButtons(){ ['btnSaveEvent','btnExportTeams','btnCopyTeams','btnDownloadTeamsPng'].forEach(id=>document.getElementById(id).style.display='none'); }
+/* ---------------------------------------------------------------------
+   Bring the New Event tab's "3 · Teams" panel in line with whatever
+   db.pendingAssignment currently is — called on initial page load, after
+   every cloud pull (login, and the viewer poll), and whenever the New
+   Event tab is switched back into view. This is what makes a pasted-in
+   assignment show up live on every other device: the device that pasted
+   the poll JSON never called this directly, it just wrote to
+   db.pendingAssignment via runAssign()/save() like any other shared
+   field, and every other viewer picks it up the same way everything
+   else on `db` does (see pullCloud()).
+   --------------------------------------------------------------------- */
+function showPendingAssignment(){
+  const A=db.pendingAssignment;
+  if(!A){ document.getElementById('assignResult').innerHTML=''; hideSaveButtons(); return; }
+  // reflect the assignment's own settings in the "1 · Set up the event" form so
+  // it reads coherently for someone who never touched this screen themselves
+  document.getElementById('evMode').value=A.mode; updateModeChip(); updateCanyonSplitVisibility();
+  document.getElementById('evDate').value=A.date;
+  document.getElementById('evTeamSize').value=A.teamSize;
+  document.getElementById('evStarters').value=A.starters;
+  if(A.canyonSplit){ const el=document.getElementById('evCanyonSplit'); if(el) el.value=A.canyonSplit; }
+  if(A.desertSplit){ const el=document.getElementById('evDesertSplit'); if(el) el.value=A.desertSplit; }
+  renderAssignment();
+}
 
 window.dropMember=(slot,i)=>{
   evSwapSel=null; // dropping a row shifts every later index in this team out from under any pending selection
-  const m=pendingAssignment.teams[slot].splice(i,1)[0];
-  pendingAssignment.waitlist.unshift(m); renderAssignment();
+  const m=db.pendingAssignment.teams[slot].splice(i,1)[0];
+  db.pendingAssignment.waitlist.unshift(m); save(); renderAssignment();
 };
 window.removeMember=(slot,i)=>{
   evSwapSel=null;
-  const m=pendingAssignment.teams[slot].splice(i,1)[0];
+  const m=db.pendingAssignment.teams[slot].splice(i,1)[0];
   apps=apps.filter(a=>norm(a.name)!==norm(m.name));
-  renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
+  save(); renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
 };
 window.removeWait=i=>{
-  const m=pendingAssignment.waitlist.splice(i,1)[0];
+  const m=db.pendingAssignment.waitlist.splice(i,1)[0];
   apps=apps.filter(a=>norm(a.name)!==norm(m.name));
-  renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
+  save(); renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
 };
 window.removeNa=i=>{
-  const m=pendingAssignment.notAvailable.splice(i,1)[0];
+  const m=db.pendingAssignment.notAvailable.splice(i,1)[0];
   apps=apps.filter(a=>norm(a.name)!==norm(m.name));
-  renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
+  save(); renderApps(); renderAssignment(); toast(`${m.name} removed from this event`);
 };
 window.promoteTo=(i,slot)=>{
-  const A=pendingAssignment, m=A.waitlist[i];
+  const A=db.pendingAssignment, m=A.waitlist[i];
   const p=peekPlayer(m.name);
   if(p&&isBanned(p,A.mode,A.date)){ toast(`${m.name} is banned from ${MODES[A.mode]} until ${p.banUntil[A.mode]} — cannot be added`,'err'); renderAssignment(); return; }
   if(A.teams[slot].length>=A.teamSize){ toast(`${slot==='noon'?'Noon':'Evening'} team is full (${A.teamSize}) — drop someone first`,'err'); return; }
-  A.waitlist.splice(i,1); A.teams[slot].push(m); renderAssignment();
+  A.waitlist.splice(i,1); A.teams[slot].push(m); save(); renderAssignment();
   toast(`${m.name} added to ${slot==='noon'?'☀️ Noon':'🌙 Evening'}`);
 };
 // Tap a STARTER/SUB badge to select it, then tap any other player in the same
@@ -1772,15 +1814,16 @@ window.promoteTo=(i,slot)=>{
 window.evToggleTap=(slot,i)=>{
   if(evSwapSel&&evSwapSel.slot===slot&&evSwapSel.i===i){ evSwapSel=null; renderAssignment(); return; }
   if(!evSwapSel||evSwapSel.slot!==slot){ evSwapSel={slot,i}; renderAssignment(); return; }
-  const list=pendingAssignment.teams[slot], j=evSwapSel.i;
+  const list=db.pendingAssignment.teams[slot], j=evSwapSel.i;
   [list[i],list[j]]=[list[j],list[i]];
   evSwapSel=null;
+  save();
   renderAssignment();
 };
 
 /* ================= save event ================= */
 document.getElementById('btnSaveEvent').onclick=()=>{
-  const A=pendingAssignment; if(!A) return;
+  const A=db.pendingAssignment; if(!A) return;
   const ev={id:Date.now(),mode:A.mode,date:A.date,starters:A.starters,
     teams:{noon:A.teams.noon.map((m,i)=>({name:m.name,role:i<A.starters?'starter':'sub',attended:null})),
            evening:A.teams.evening.map((m,i)=>({name:m.name,role:i<A.starters?'starter':'sub',attended:null}))},
@@ -1789,9 +1832,10 @@ document.getElementById('btnSaveEvent').onclick=()=>{
     banned:A.banned.map(b=>b.name),
     roster:Object.values(db.players).map(p=>p.name)}; // snapshot for "didn't vote"
   db.events.push(ev); db.events.sort((a,b)=>a.date<b.date?1:-1);
-  recomputeDerived(); // selections, fairness dates and applications all derive from the event log
+  db.pendingAssignment=null; // clear the shared "3 · Teams" state for every device in the same save
+  recomputeDerived(); // selections, fairness dates and applications all derive from the event log; also saves/syncs
   toast('Event saved — selections recorded for fairness tracking');
-  apps=[]; pendingAssignment=null; renderApps();
+  apps=[]; renderApps();
   document.getElementById('assignResult').innerHTML=''; hideSaveButtons();
 };
 
@@ -1802,7 +1846,7 @@ function download(name,content,type){
   a.download=name; a.click();
 }
 // exportTeamsCsv/copyTeamsText below take an assignment-shaped object (A) rather
-// than reading `pendingAssignment` directly, so the exact same code can render
+// than reading `db.pendingAssignment` directly, so the exact same code can render
 // either the not-yet-saved "3 · Teams" step OR a saved History event, via the
 // evToAssignmentLike() adapter further down — see "New Event tab — copy/export
 // teams from a saved History event" for why. `m.avail`/`m.guaranteed` are absent
@@ -1829,8 +1873,8 @@ function copyTeamsText(A){
   if(A.notAvailable.length) txt+='Not available: '+A.notAvailable.map(m=>m.name).join(', ')+'\n';
   navigator.clipboard.writeText(txt).then(()=>toast('Roster copied — paste into Discord/chat'));
 }
-document.getElementById('btnExportTeams').onclick=()=>exportTeamsCsv(pendingAssignment);
-document.getElementById('btnCopyTeams').onclick=()=>copyTeamsText(pendingAssignment);
+document.getElementById('btnExportTeams').onclick=()=>exportTeamsCsv(db.pendingAssignment);
+document.getElementById('btnCopyTeams').onclick=()=>copyTeamsText(db.pendingAssignment);
 
 /* Renders the same two teams shown in "3 · Teams" as a shareable image — noon
    and evening side by side, same info as the on-screen table (role, Power)
@@ -1945,11 +1989,11 @@ async function downloadTeamsPng(A,btn){
     if(btn){ btn.disabled=false; btn.textContent=orig; }
   }
 }
-document.getElementById('btnDownloadTeamsPng').onclick=()=>downloadTeamsPng(pendingAssignment,document.getElementById('btnDownloadTeamsPng'));
+document.getElementById('btnDownloadTeamsPng').onclick=()=>downloadTeamsPng(db.pendingAssignment,document.getElementById('btnDownloadTeamsPng'));
 
 // Adapts a saved db.events[] record (History tab) into the same {mode,date,
 // starters,teamSize,teams,waitlist,notAvailable,dsStrength,canyonSplit,
-// desertSplit} shape pendingAssignment has, so exportTeamsCsv/copyTeamsText/
+// desertSplit} shape db.pendingAssignment has, so exportTeamsCsv/copyTeamsText/
 // downloadTeamsPng/evTeamsSVG — built for the pre-save "3 · Teams" step — can
 // render a saved event's teams unchanged. A saved event's rows only ever
 // carry {name,role,attended,banDays?,note?} (avail/guaranteed aren't kept
@@ -2174,8 +2218,8 @@ window.delPlayer=i=>{
   // also drop them from the current unsaved event, so nothing recreates them
   apps=apps.filter(a=>norm(a.name)!==k);
   review=review.filter(r=>norm(r.name)!==k);
-  if(pendingAssignment){
-    const A=pendingAssignment;
+  if(db.pendingAssignment){
+    const A=db.pendingAssignment;
     for(const s of ['noon','evening']) A.teams[s]=A.teams[s].filter(m=>norm(m.name)!==k);
     A.waitlist=A.waitlist.filter(m=>norm(m.name)!==k);
     A.notAvailable=A.notAvailable.filter(m=>norm(m.name)!==k);
@@ -5241,6 +5285,11 @@ window.doImportResults=function(mode){
 
 
 renderCsPlayers(); renderCsBuildTab(); renderCsSetup();
+// Standalone (no cloud) mode never calls pullCloud(), so render any saved
+// db.pendingAssignment here on first paint — placed last in the script
+// (after every const/function it depends on, e.g. DS_GRADE_SCORE) since
+// renderAssignment() runs synchronously as soon as this line executes.
+showPendingAssignment();
 
 </script>
 </body>
