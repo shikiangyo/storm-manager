@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-21 14:31 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-21 14:49 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -134,7 +134,7 @@
       <label>Starters <input type="number" id="evStarters" value="20" min="0" style="width:64px"></label>
       <label id="canyonSplitWrap" style="display:none">Team split
         <select id="evCanyonSplit">
-          <option value="even">Even teams</option>
+          <option value="balanced">Balanced (share evenly by power)</option>
           <option value="priority">Prioritise one team</option>
         </select>
       </label>
@@ -146,12 +146,15 @@
       </label>
     </div>
     <p class="help" id="canyonSplitHelp" style="display:none">
-      <b>Even teams</b> (default) splits applicants across Team A/B purely by who has more space, same as always.
-      <b>Prioritise one team</b> instead ranks everyone by <b>DS Ranking</b> grade (power breaking ties) and stacks the
-      highest-graded players onto Team A first, filling Team B with everyone else once Team A is full — same
-      grade-then-power ranking Desert Storm uses, set on the <b>Storm Players</b> tab (admin only). Either way,
-      <i>who</i> gets one of the spots is still decided purely by fairness order first — this only changes which
-      team a picked player lands on.</p>
+      Both control which side <b>already-included "both" voters</b> land on — <i>who</i> gets one of the spots is
+      still decided purely by fairness order first, exactly the same either way; single-preference voters are also
+      unaffected, since a single-preference voter never had a side to choose between.
+      <b>Balanced</b> (default) ranks the "both" voters by <b>DS Ranking</b> grade (power breaking ties — same
+      grade-then-power ranking Desert Storm uses, set on the <b>Storm Players</b> tab, admin only) and deals them
+      alternately between Team A and Team B — strongest to A, 2nd-strongest to B, 3rd to A, and so on — so the two
+      teams come out roughly even in strength instead of it being down to chance who happened to apply in what order.
+      <b>Prioritise one team</b> instead stacks the highest-graded players onto Team A first, filling Team B with
+      everyone else once Team A is full — for when you want one team to deliberately be the strong team.</p>
     <p class="help" id="desertSplitHelp" style="display:none">
       Both control which side <b>already-included "both" voters</b> land on — who gets one of the 60 spots is
       decided by fairness order first, exactly the same either way; noon-only/evening-only voters are also
@@ -1608,28 +1611,50 @@ function runAssign(){
     }
     dsStrength={strongSide:res.side,weakSide,reason:res.reason,rows:res.rows,
       noon:teams.noon.map(m=>dsStrengthOf(m.name)),evening:teams.evening.map(m=>dsStrengthOf(m.name))};
-  } else if(mode==='canyon' && canyonSplit==='priority'){
-    /* Canyon Storm "Prioritise one team" — same shape as Desert Storm's second
+  } else if(mode==='canyon' && (canyonSplit==='priority'||canyonSplit==='balanced')){
+    /* Canyon Storm, both split modes — same shape as Desert Storm's second
        pass above (inclusion and team size are already final; this only ever
-       moves an already-included "both" voter between the two teams), except
-       there's no side-strength contest to work out first: Team A (noon) is
-       always the stacked side. Pull every seated "both" voter back out,
-       rank strongest-to-weakest by DS Ranking grade + power (same dsCmp
-       Desert Storm uses), and refill Noon first so it fills up with the
-       highest grades before Evening gets anyone. A single-preference voter
-       (shouldn't normally happen in Canyon — applications are just
-       available/not available — but the CSV format still technically allows
-       noon/evening) keeps whatever side it already locked in above,
-       unmoved, same as Desert Storm's equivalent pass. */
+       moves an already-included "both" voter between the two teams). Pull
+       every seated "both" voter back out, rank strongest-to-weakest by DS
+       Ranking grade + power (same dsCmp Desert Storm uses), then refill:
+       'balanced' (default, replaced the old power-blind "Even teams" on
+       2026-09-21 — Pete: fairness of who gets picked stays the same, he
+       just wants *which* team a "both" voter lands on to stop being pure
+       chance) deals that sorted list ALTERNATELY between Noon/Evening —
+       strongest to Noon, 2nd-strongest to Evening, 3rd to Noon, and so on —
+       same alternating idea as Desert Storm's 'balanced' option. 'priority'
+       instead refills Noon first so it fills up with the highest grades
+       before Evening gets anyone — Team A (noon) is always the stacked
+       side, no side-strength contest to work out first. Either way a
+       single-preference voter (shouldn't normally happen in Canyon —
+       applications are just available/not available — but the CSV format
+       still technically allows noon/evening) keeps whatever side it
+       already locked in above, unmoved. */
     const bothPicked=[];
     for(const s of ['noon','evening']) teams[s]=teams[s].filter(m=>{
       if(m.avail==='both'){ bothPicked.push(m); return false; }
       return true;
     });
     const bothSorted=[...bothPicked].sort((a,b)=>dsCmp(dsStrengthOf(a.name),dsStrengthOf(b.name)));
-    for(const x of bothSorted){
-      const t=teams.noon.length<teamSize?'noon':'evening';
-      teams[t].push(x);
+    if(canyonSplit==='balanced'){
+      let side='noon'; // deterministic starting point — alternates every pick
+      for(const x of bothSorted){
+        const t=teams[side].length<teamSize?side:other(side);
+        teams[t].push(x);
+        side=other(side);
+      }
+      // Unlike Desert Storm's dsStrength (measured on the single-preference
+      // base, before "both" voters are dealt back in), this is measured on
+      // the FINAL teams — the whole point is showing whether the alternating
+      // deal actually balanced the two sides, not just the base it started from.
+      const res=strongerSideOf(teams.noon,teams.evening);
+      dsStrength={strongSide:res.side,weakSide:other(res.side),reason:res.reason,rows:res.rows,
+        noon:teams.noon.map(m=>dsStrengthOf(m.name)),evening:teams.evening.map(m=>dsStrengthOf(m.name))};
+    } else {
+      for(const x of bothSorted){
+        const t=teams.noon.length<teamSize?'noon':'evening';
+        teams[t].push(x);
+      }
     }
   }
   // starter order within each team: guaranteed first, then longest since last
@@ -1682,7 +1707,7 @@ function renderAssignment(){
   // logic (dsCmp, strongerSideOf) — it's only hidden from every display, here
   // and in the PNG export / rank-by-rank breakdown below.
   const dsBadge=name=>{
-    if(A.mode!=='desert' && !(A.mode==='canyon'&&A.canyonSplit==='priority')) return '';
+    if(A.mode!=='desert' && !(A.mode==='canyon'&&(A.canyonSplit==='priority'||A.canyonSplit==='balanced'))) return '';
     const d=dsStrengthOf(name);
     return `<span class="badge b-wait" title="Power">${fmtM(d.power)}</span> `;
   };
@@ -1696,8 +1721,18 @@ function renderAssignment(){
       <td><span class="badge ${i<A.starters?'b-start':'b-sub'}" style="cursor:pointer${sel===i?';outline:2px solid var(--accent);outline-offset:1px':''}" title="${sel===i?'Tap again to cancel':evSwapSel?'Tap to swap with the selected player':'Tap, then tap another player in this team to swap them'}" onclick="evToggleTap('${slot}',${i})">${i<A.starters?'STARTER':'SUB'}</span></td>
       <td><button class="mini" onclick="dropMember('${slot}',${i})">↓ drop</button> <button class="mini" title="Remove from event entirely" onclick="removeMember('${slot}',${i})">✕</button></td>
     </tr>`).join('');
-    const baseOnly=A.desertSplit==='balanced'; // balanced mode doesn't stack "both" voters onto this side, so the badge only reflects the single-preference base, not the final line-up
-    const strongTag=A.dsStrength&&A.dsStrength.strongSide===slot?` <span class="badge b-start" title="${baseOnly?'Ahead on single-preference voters only — the &quot;both&quot; voters were split evenly, not stacked here':'Includes the strongest both voters, stacked here on purpose'}">${baseOnly?'STRONGER BASE':'STRONGER SIDE'}</span>`:(A.dsStrength&&A.dsStrength.weakSide===slot?` <span class="badge b-wait" title="${baseOnly?'Behind on single-preference voters only — the &quot;both&quot; voters were split evenly, not stacked away from here':'Everyone left over once the stronger side was filled'}">${baseOnly?'weaker base':'weaker side'}</span>`:'');
+    const baseOnly=A.desertSplit==='balanced'; // measured before "both" voters are dealt back in, so the badge only reflects the single-preference base, not the final line-up
+    // desert-priority stacks the "both" voters onto the ahead side on purpose; canyon-balanced
+    // instead deals them alternately and just reports how that happened to land — different
+    // enough to need their own tooltip wording (baseOnly already covers desert-balanced above).
+    const stackedOnPurpose=A.mode==='desert'&&!baseOnly;
+    const strongTip=baseOnly?'Ahead on single-preference voters only — the &quot;both&quot; voters were split evenly, not stacked here'
+      :stackedOnPurpose?'Includes the strongest both voters, stacked here on purpose'
+      :'Came out ahead after the &quot;both&quot; voters were dealt alternately by DS Ranking grade/power';
+    const weakTip=baseOnly?'Behind on single-preference voters only — the &quot;both&quot; voters were split evenly, not stacked away from here'
+      :stackedOnPurpose?'Everyone left over once the stronger side was filled'
+      :'Came out behind after the &quot;both&quot; voters were dealt alternately by DS Ranking grade/power';
+    const strongTag=A.dsStrength&&A.dsStrength.strongSide===slot?` <span class="badge b-start" title="${strongTip}">${baseOnly?'STRONGER BASE':'STRONGER SIDE'}</span>`:(A.dsStrength&&A.dsStrength.weakSide===slot?` <span class="badge b-wait" title="${weakTip}">${baseOnly?'weaker base':'weaker side'}</span>`:'');
     const priorityTag=A.canyonSplit==='priority'?(slot==='noon'?' <span class="badge b-start">PRIORITY TEAM</span>':' <span class="badge b-wait">everyone else</span>'):'';
     return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}${strongTag}${priorityTag}</h3>
       <table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
@@ -1736,11 +1771,18 @@ function renderAssignment(){
   }).join(''):'';
   const dsBreakdown=dsRowsHtml?`<details style="margin-top:6px"><summary style="cursor:pointer">Show full rank-by-rank breakdown</summary>
     <table style="margin-top:6px"><tr><th>Rank</th><th>☀️ Noon</th><th>🌙 Evening</th><th>Winner</th><th>Points</th></tr>${dsRowsHtml}</table></details>`:'';
-  const dsBothLine=!A.dsStrength ? '' : A.desertSplit==='balanced'
-    ? `The "both" voters were then dealt alternately between the two sides by DS Ranking grade/power (strongest to Noon, next to Evening, and so on), rather than stacked on ${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} — check the two teams below to see how it actually balanced out.`
+  // Desert's 'balanced' measures dsStrength on the single-preference base, before
+  // "both" voters are dealt back in (so the wording below says "going in"); Canyon's
+  // 'balanced' measures it on the FINAL teams instead (see runAssign) since the
+  // whole point there is showing whether the alternating deal actually balanced
+  // the two sides — so it always talks about the present, not a starting point.
+  const dealtAlternately=A.desertSplit==='balanced'||(A.mode==='canyon'&&A.canyonSplit==='balanced');
+  const measuredBeforeDealing=A.desertSplit==='balanced';
+  const dsBothLine=!A.dsStrength ? '' : dealtAlternately
+    ? `The "both" voters were then dealt alternately between the two sides by DS Ranking grade/power (strongest to Noon, next to Evening, and so on)${measuredBeforeDealing?`, rather than stacked on ${A.dsStrength.strongSide==='noon'?'Noon':'Evening'}`:''} — check the two teams below to see how it actually balanced out.`
     : `The strongest "both" voters were used to fill it out; the rest went to ${A.dsStrength.weakSide==='noon'?'Noon':'Evening'}.`;
   const dsBanner=A.dsStrength?`<div class="banner view" style="margin-top:12px;flex-direction:column;align-items:stretch">
-    <div>⚔ <b>${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} ${A.desertSplit==='balanced'?'was the stronger side going in':'is the stronger side'}</b> —
+    <div>⚔ <b>${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} ${measuredBeforeDealing?'was the stronger side going in':'is the stronger side'}</b> —
     ${A.dsStrength.reason} ${dsBothLine}
     Drag-free re-shuffling: use ↓/✕ on a team member and the waitlist's → buttons below if you want to move anyone by hand.</div>
     ${dsBreakdown}</div>`:'';
@@ -1962,7 +2004,9 @@ function evTeamsSVG(A){
   }
   const modeLabel=(MODES[A.mode]||A.mode).toUpperCase();
   const subtitle=A.dsStrength
-    ? (A.desertSplit==='balanced' ? '"Both" voters split evenly by DS Ranking' : `${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} is the stronger side`)
+    ? (A.desertSplit==='balanced' ? '"Both" voters split evenly by DS Ranking'
+       : (A.mode==='canyon'&&A.canyonSplit==='balanced') ? `${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} came out stronger — "both" voters dealt evenly by DS Ranking`
+       : `${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} is the stronger side`)
     : A.canyonSplit==='priority' ? 'Team A (Noon) is the priority team' : '';
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Arial,sans-serif">
 <rect x="0" y="0" width="${W}" height="${H}" fill="${EV.bg}"/>
