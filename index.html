@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-21 09:35 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-21 14:31 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -1639,7 +1639,13 @@ function runAssign(){
     teams[s]=shuffle(teams[s]).sort((a,b)=>(b.guaranteed-a.guaranteed)||(startRank(a)<startRank(b)?-1:startRank(a)>startRank(b)?1:0));
   const fair={};
   for(const x of pool) fair[x.p.name]={refused:x.f.refused, walk:x.f.walk};
-  db.pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),fair,fairDates:F.dates,dsStrength,canyonSplit,desertSplit:mode==='desert'?desertSplit:null};
+  // Roster members who never showed up in this batch of applications at all —
+  // not waitlisted, not "not available", not banned, just silent. Includes
+  // anyone who's actually left the alliance but hasn't been removed from the
+  // roster yet; Pete's fine with that overlap rather than trying to guess it.
+  const appliedKeys=new Set(apps.map(a=>resolveKey(a.name)||norm(a.name)));
+  const notVoted=Object.keys(db.players).filter(k=>!appliedKeys.has(k)).map(k=>db.players[k].name);
+  db.pendingAssignment={mode,date,teamSize,starters:+document.getElementById('evStarters').value||20,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),notVoted,fair,fairDates:F.dates,dsStrength,canyonSplit,desertSplit:mode==='desert'?desertSplit:null};
   save(); // shared with every other device — see db.pendingAssignment comment above
   renderAssignment();
 }
@@ -1718,6 +1724,10 @@ function renderAssignment(){
   const bn=A.banned.map(b=>`<li>${esc(b.name)} — banned until ${b.until} &nbsp; ${history(b.name)}</li>`).join('');
   A.notAvailable.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
   const na=A.notAvailable.map((m,i)=>`<li>${esc(m.name)} &nbsp; ${history(m.name)} <button class="mini" title="Remove from event" onclick="removeNa(${i})">✕</button></li>`).join('');
+  // roster members who didn't apply at all this round (see notVoted comment in runAssign) —
+  // informational only, so no remove/add buttons: they were never part of this event to begin with
+  A.notVoted=(A.notVoted||[]).slice().sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:'base'}));
+  const nv=A.notVoted.map(n=>`<li>${esc(n)} &nbsp; ${history(n)}</li>`).join('');
   const dsRowsHtml=(A.dsStrength&&A.dsStrength.rows&&A.dsStrength.rows.length)?A.dsStrength.rows.map(r=>{
     const cell=x=>x?`${esc(x.name)} <span class="muted">(${fmtM(x.power)})</span>`:'<span class="muted">—</span>'; // grade letter deliberately omitted — see dsBadge above
     const w=r.winner==='tie'?'Tie':(r.winner==='noon'?'Noon':'Evening');
@@ -1744,6 +1754,7 @@ function renderAssignment(){
     ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th>${wlHistHead}<th></th></tr>${wl}</table>`:''}
     ${A.notAvailable.length?`<h3 style="color:var(--muted)">Voted — not available this week</h3><ul class="muted">${na}</ul>`:''}
     ${A.banned.length?`<h3 style="color:var(--red)">Excluded — no-show ban (cannot be added)</h3><ul class="muted">${bn}</ul>`:''}
+    ${A.notVoted.length?`<h3 style="color:var(--muted)">Didn't vote</h3><ul class="muted">${nv}</ul>`:''}
     <p class="help">Starters: guaranteed first, then longest since last started in this mode. Tap a STARTER/SUB badge, then tap any other player in the same team to swap them (their roles and positions both trade) — tap the same badge again to cancel. Nothing is recorded until you confirm.</p>`;
   document.getElementById('btnSaveEvent').style.display='';
   document.getElementById('btnExportTeams').style.display='';
@@ -2224,6 +2235,7 @@ window.delPlayer=i=>{
     A.waitlist=A.waitlist.filter(m=>norm(m.name)!==k);
     A.notAvailable=A.notAvailable.filter(m=>norm(m.name)!==k);
     A.banned=A.banned.filter(b=>norm(b.name)!==k);
+    if(A.notVoted) A.notVoted=A.notVoted.filter(n=>norm(n)!==k);
     renderApps(); renderReview(); renderAssignment();
   }
   save(); renderRoster(); toast('Player removed');
