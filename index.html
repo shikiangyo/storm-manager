@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 09:28 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 09:44 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -4379,7 +4379,11 @@ function csLineupHtml(A,team){
       : `<span class="cap" style="color:var(--red)">${csEsc(p.t1||'')} no power</span>`;
   const cards=A.groups.map((g,i)=>{
     const slot=A.result[g.key];
-    const roam=g.kind==='roam';
+    // Only actually call it "FREE ROAMERS" when the group's own name says so
+    // (Canyon's Free-Roamers group) — a custom roam-kind group with its own
+    // name (e.g. a Desert "Hospital") keeps that name instead, same rule the
+    // poster already uses, so the board and the poster never disagree.
+    const roam=g.kind==='roam'&&/roam/i.test(g.name);
     const rows=slot.pairs.length
       ? slot.starters.map(st=>{
           const pr=slot.pairs.find(p=>p.starter.id===st.id);
