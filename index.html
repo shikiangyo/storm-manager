@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 09:16 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 09:28 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -4590,9 +4590,9 @@ function renderCsSetup(){
         <td><button class="mini admin-only" title="Remove this group" onclick="csSetupDel('${which}',${i})">🗑</button></td>
       </tr>`).join('')}
       <tr><td colspan="2" class="muted">Total</td>
-          <td><b>${tS}</b></td><td><b>${tB}</b></td>
-          <td><button class="mini admin-only" title="Add a group" onclick="csSetupAdd('${which}')">+</button></td></tr>
-      </tbody></table>`;
+          <td><b>${tS}</b></td><td><b>${tB}</b></td><td></td></tr>
+      </tbody></table>
+      <div class="row" style="margin-top:8px"><button class="btn ghost admin-only" onclick="csSetupAdd('${which}')">+ Add group</button></div>`;
   };
   // Which starter-rank (by power, strongest first) goes to which group, for
   // one Desert setup — this is what csPlaceDesert actually deals against.
