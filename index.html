@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 10:33 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 12:45 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -409,8 +409,8 @@
     <h2>Briefing wording</h2>
     <p class="help">The wording for the <b>Canyon Storm</b> mail and poster. Everything below is yours to edit —
       the assignments are appended underneath automatically.<br>
-      Desert Storm has no written briefing, so there's nothing to edit here — its poster carries the
-      standing orders and the substitutes list instead.</p>
+      <b>Desert Storm</b> has no separate mail — just its poster headline and the STRATEGY list at the bottom;
+      the assignments and substitutes are appended automatically there too.</p>
     <div id="csBriefArea"></div>
     <div class="row" style="margin-top:14px">
       <button class="btn ghost admin-only" onclick="csSetupReset()">Reset setups and wording to defaults</button>
@@ -4675,7 +4675,12 @@ function renderCsBriefing(){
     ${ta(m,'posterTag',1,'Poster tagline')}
     ${ta(m,'posterFoot1',1,'Poster footer — headline')}
     ${ta(m,'posterFoot2',2,'Poster footer — small print')}`;
-  el.innerHTML=block('canyon','Canyon Storm briefing','');
+  const desertBlock=()=>`<h3 style="margin-top:18px">Desert Storm poster wording</h3>
+    ${ta('desert','title',1,'Poster headline')}
+    ${ta('desert','subtitle',1,'Poster sub-headline')}
+    ${ta('desert','subtitle2',1,'Poster sub-headline — smaller, underneath','optional')}
+    ${ta('desert','strategy',5,'STRATEGY — bottom of poster','one per line, shown as a list under the heading STRATEGY')}`;
+  el.innerHTML=block('canyon','Canyon Storm briefing','')+desertBlock();
 }
 
 window.csBriefEdit=(m,f,val)=>{
