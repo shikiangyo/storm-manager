@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 09:00 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 09:16 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -4227,6 +4227,31 @@ function csDesertAutoSlotOrder(groups){
   }
   return order;
 }
+// Keep a Desert setup's rank-order in sync with its groups table whenever a
+// group is added/removed, or a group's starter count changes. `which` is a
+// no-op for anything that isn't a Desert setup key (e.g. Canyon setups).
+// Existing entries for groups that still exist are kept where they are —
+// only what's now missing or excess actually moves — so a hand-tuned order
+// survives an edit to a *different* group in the same setup.
+function csDesertResyncSlotOrder(which){
+  const meta=(db.cs.desertSetups||[]).find(s=>s.key===which); if(!meta) return;
+  const groups=db.cs.setups[which]||[];
+  const target={}; groups.forEach(g=>{ target[g.key]=g.starters||0; });
+  const have={}; groups.forEach(g=>{ have[g.key]=0; });
+  let order=(meta.slotOrder||[]).filter(k=>{
+    if(!(k in target)) return false;          // group no longer exists
+    if(have[k]>=target[k]) return false;       // already has enough of this one
+    have[k]++; return true;
+  });
+  let added=true, guard=0;
+  while(added && guard++<400){
+    added=false;
+    for(const g of groups){
+      if(have[g.key]<target[g.key]){ order.push(g.key); have[g.key]++; added=true; }
+    }
+  }
+  meta.slotOrder=order;
+}
 window.csDesertSetupPick=val=>{ csDesertSetupSel=val; renderCsBuild(); };
 
 function renderCsBuildTab(){
@@ -4658,12 +4683,14 @@ window.csSetupEdit=(which,i,field,val)=>{
     if(!val) { renderCsSetup(); return; }        // don't allow a blank name
   }
   g[field]=val;
+  if(field==='starters') csDesertResyncSlotOrder(which);   // no-op for Canyon setups
   save();
   if(field==='starters'||field==='subs'||field==='kind') renderCsSetup();
   toast('Saved');
 };
 window.csSetupAdd=which=>{
   db.cs.setups[which].push({key:'g'+csUid(),name:'New group',short:'NEW GROUP',starters:3,subs:0,kind:'mid'});
+  csDesertResyncSlotOrder(which);
   save(); renderCsSetup();
 };
 window.csSetupDel=(which,i)=>{
@@ -4676,7 +4703,7 @@ window.csSetupDel=(which,i)=>{
   document.body.appendChild(wrap);
   wrap.querySelector('#gdN').onclick=()=>wrap.remove();
   wrap.querySelector('#gdY').onclick=()=>{
-    db.cs.setups[which].splice(i,1); save(); wrap.remove(); renderCsSetup();
+    db.cs.setups[which].splice(i,1); csDesertResyncSlotOrder(which); save(); wrap.remove(); renderCsSetup();
   };
 };
 
