@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-21 15:06 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 09:00 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -443,6 +443,11 @@ const CS_DEFAULT_DS=[
   {key:'sci',   name:'Science',          short:'SCIENCE',         starters:3, subs:0, kind:'mid'},
   {key:'float', name:'Float / Hospital', short:'FLOAT / HOSPITAL',starters:6, subs:0, kind:'roam'}
 ];
+// The default Desert rank-to-group sequence (strongest starter first) — kept
+// up here, ahead of `let db = load()` below, because migrate() references it
+// while seeding db.cs.desertSetups and load() runs synchronously at parse time.
+const DESERT_SLOTS=['loil','roil','sci','float','roil','loil','float','sci','sci','info',
+                    'info','float','roil','loil','float','sci','loil','roil','info','float'];
 /* Briefing wording, editable per mode on the Storm Setup tab.
    The Canyon text is yours as-is. The Desert text is a first draft
    built from the Canyon one — check it before you send it out. */
@@ -507,6 +512,8 @@ function migrate(d){
   d.cs.setups.rulebringers=d.cs.setups.rulebringers||JSON.parse(JSON.stringify(CS_DEFAULT_RB));
   d.cs.setups.dawnbreakers=d.cs.setups.dawnbreakers||JSON.parse(JSON.stringify(CS_DEFAULT_DB));
   d.cs.setups.desert     =d.cs.setups.desert     ||JSON.parse(JSON.stringify(CS_DEFAULT_DS));
+  d.cs.desertSetups=d.cs.desertSetups||[{key:'desert', title:'Standard Desert Setup', description:'', slotOrder:[...DESERT_SLOTS]}];
+  d.cs.desertSetups.forEach(s=>{ if(!Array.isArray(s.slotOrder)) s.slotOrder=[...DESERT_SLOTS]; if(typeof s.title!=='string') s.title=s.key; if(typeof s.description!=='string') s.description=''; });
   d.cs.briefing=d.cs.briefing||{};
   ['canyon','desert'].forEach(m=>{
     d.cs.briefing[m]=Object.assign(JSON.parse(JSON.stringify(CS_BRIEFING_DEFAULTS[m])), d.cs.briefing[m]||{});
@@ -3474,12 +3481,9 @@ function csPlace(players, groups, lastsub, roles, subMode){
    Anyone set as a Holder on Storm Players cannot take a Float slot. Non-
    Holders are held back so the Float slots can be filled; if there still
    aren't enough, Holders fill the gap and the build reports it.            */
-const DESERT_SLOTS=['loil','roil','sci','float','roil','loil','float','sci','sci','info',
-                    'info','float','roil','loil','float','sci','loil','roil','info','float'];
-const DESERT_FILL =['loil','roil','sci','info','float'];
-
-function csPlaceDesert(players, groups, lastsub, roles, subMode){
+function csPlaceDesert(players, groups, lastsub, roles, subMode, slotOrder){
   roles=roles||{};
+  slotOrder=(slotOrder&&slotOrder.length)?slotOrder:DESERT_SLOTS;
   const byPower=(a,b)=>b.power-a.power;
   const out={}; groups.forEach(g=>out[g.key]={starters:[],pairs:[],extraSubs:[]});
   const notes=[];
@@ -3514,12 +3518,14 @@ function csPlaceDesert(players, groups, lastsub, roles, subMode){
   // order Oil L, Oil R, Science, Info, Float.
   const order=[], used={};
   groups.forEach(g=>used[g.key]=0);
-  for(const k of DESERT_SLOTS){
+  for(const k of slotOrder){
     const g=slotGroup(k); if(!g) continue;
     if(used[g.key] < g.starters){ order.push(g); used[g.key]++; }
   }
-  const fillOrder=[...DESERT_FILL.map(slotGroup).filter(Boolean),
-                   ...groups.filter(g=>!DESERT_FILL.map(slotGroup).includes(g))];
+  // Fallback top-up order: whatever's still short, walked in the setup's own
+  // group order — the loop below repeats until every group hits its target,
+  // so this doesn't need to be precise, just a reasonable starting order.
+  const fillOrder=groups;
   let added=true, guard=0;
   while(added && guard++ < 200){
     added=false;
@@ -4197,9 +4203,31 @@ window.csUnlink=(id,alias)=>{
    CS BUILD TAB
    ===================================================================== */
 let csSel=null;                       // currently tapped player id (for swaps)
+let csDesertSetupSel=null;            // which db.cs.desertSetups[].key is picked on the build board
 const csTeamOf=slot=>slot==='noon'?'A':'B';
 // Canyon runs as Team A / Team B; Desert keeps the real Noon / Evening slots.
 const csLabels=(mode,slot)=>({team:'TEAM '+csTeamOf(slot), badgeTop:'TEAM', badgeVal:csTeamOf(slot)});
+// Desert Storm can have several named setups (db.cs.desertSetups); this always
+// returns at least the one default so old installs / a wiped list still work.
+function csDesertSetupList(){
+  return (db.cs.desertSetups&&db.cs.desertSetups.length)?db.cs.desertSetups:[{key:'desert',title:'Standard Desert Setup',description:'',slotOrder:[...DESERT_SLOTS]}];
+}
+function csDesertSetupMeta(key){
+  return csDesertSetupList().find(s=>s.key===key)||{key,title:key+' (setup removed)',description:'',slotOrder:[...DESERT_SLOTS]};
+}
+// A reasonable starting rank-order for a setup's groups: round-robin through
+// them by their configured starter counts. Doesn't need to be precise — see
+// csPlaceDesert, which tops up any group that falls short regardless.
+function csDesertAutoSlotOrder(groups){
+  const pools=groups.map(g=>({key:g.key,left:g.starters||0}));
+  const total=pools.reduce((s,p)=>s+p.left,0);
+  const order=[];
+  while(order.length<total){
+    for(const p of pools){ if(p.left>0){ order.push(p.key); p.left--; } }
+  }
+  return order;
+}
+window.csDesertSetupPick=val=>{ csDesertSetupSel=val; renderCsBuild(); };
 
 function renderCsBuildTab(){
   const sel=document.getElementById('csEvent'); if(!sel) return;
@@ -4259,6 +4287,29 @@ function renderCsBuild(){
   const A=db.cs.assign[key];
   const accent=team==='A'?'var(--accent)':'var(--accent2)';
 
+  // Desert Storm can have several named setups — work out which one applies
+  // to this board (locked to whichever built it, once built) before it's
+  // used below for the size-mismatch check and the auto-assign button.
+  let desertPicker='', desertSetupKey='desert';
+  if(mode==='desert'){
+    const list=csDesertSetupList();
+    desertSetupKey=A?A.setupKey:(list.some(s=>s.key===csDesertSetupSel)?csDesertSetupSel:list[0].key);
+    csDesertSetupSel=desertSetupKey;
+    const cur=csDesertSetupMeta(desertSetupKey);
+    desertPicker=`<div class="row" style="margin:0 0 12px;align-items:flex-start">
+      <div style="flex:1;min-width:200px">
+        ${list.length>1
+          ? `<label class="help" style="display:block;margin-bottom:4px">Storm setup${A?' used':''}</label>
+             <select id="csDesertSetupSel" ${A?'disabled':''} onchange="csDesertSetupPick(this.value)">
+               ${list.map(s=>`<option value="${s.key}" ${s.key===desertSetupKey?' selected':''}>${csEsc(s.title||s.key)}</option>`).join('')}
+             </select>`
+          : `<span class="badge b-wait" style="font-size:12px">${csEsc(cur.title||cur.key)}</span>`}
+        ${cur.description?`<p class="help" style="margin:6px 0 0">${csEsc(cur.description)}</p>`:''}
+        ${A&&list.length>1?`<p class="help" style="margin:4px 0 0;opacity:.7">Clear the line-up to build with a different setup.</p>`:''}
+      </div>
+    </div>`;
+  }
+
   let warn='';
   const unlinked=picked.filter(p=>p._missing);
   const noPower=picked.filter(p=>!p._missing&&!p.power);
@@ -4271,7 +4322,7 @@ function renderCsBuild(){
     ⚠ <b>${noPower.length} player(s) have no power set</b> — ${noPower.map(p=>csEsc(p.name)).join(', ')}.
     They'll sort to the bottom of the draft. Set their power on the <b>CS Players</b> tab.</div>`;
 
-  const setup=db.cs.setups[A?A.setupKey:(mode==='desert'?'desert':'rulebringers')]||CS_DEFAULT_RB;
+  const setup=db.cs.setups[mode==='desert'?desertSetupKey:(A?A.setupKey:'rulebringers')]||CS_DEFAULT_RB;
   const needS=setup.reduce((s,g)=>s+g.starters,0), needB=setup.reduce((s,g)=>s+g.subs,0);
   let mismatch='';
   if(!A&&(starters!==needS||subs<needB))
@@ -4281,7 +4332,7 @@ function renderCsBuild(){
 
   let placeNote='';
   if(A && (A.notes||[]).length) placeNote=`<div class="banner warn" style="margin:0 0 12px">⚠ ${A.notes.map(esc).join('<br>')}</div>`;
-  board.innerHTML=`${warn}${mismatch}${placeNote}
+  board.innerHTML=`${desertPicker}${warn}${mismatch}${placeNote}
     <div class="row">
       <span class="badge ${team==='A'?'b-guar':'b-noon'}" style="font-size:13px;padding:4px 12px">${lab.team}</span>
       <span class="badge b-wait">${MODES[mode]}</span>
@@ -4342,7 +4393,11 @@ function csAskSubMode(cb){
 window.csAskAlliance=()=>{
   const ctx=csCtx(); if(!ctx) return;
   csAskSubMode(subMode=>{
-    if(ctx.mode==='desert'){ csRun('desert',null,subMode); return; }   // no 2v1 split in Desert
+    if(ctx.mode==='desert'){                                   // no 2v1 split in Desert
+      const list=csDesertSetupList();
+      const key=list.some(s=>s.key===csDesertSetupSel)?csDesertSetupSel:list[0].key;
+      csRun(key,null,subMode); return;
+    }
     const wrap=document.createElement('div'); wrap.className='modal';
     wrap.innerHTML=`<div class="box"><h3>Which side are we this week?</h3>
       <p class="help">Canyon Storm is 2 alliances vs 1. Pick which we are.</p>
@@ -4366,8 +4421,9 @@ function csRun(setupKey, side, subMode){
   const ctx=csCtx(); if(!ctx) return;
   const roles={}; ctx.picked.forEach(p=>roles[p.id]=p.role);
   const groups=csSideLabel(db.cs.setups[setupKey]||CS_DEFAULT_RB, setupKey==='dawnbreakers'?side:null);
-  const place=ctx.mode==='desert'?csPlaceDesert:csPlace;
-  const res=place(ctx.picked, groups, db.cs.lastsub, roles, subMode);
+  const res=ctx.mode==='desert'
+    ? csPlaceDesert(ctx.picked, groups, db.cs.lastsub, roles, subMode, csDesertSetupMeta(setupKey).slotOrder)
+    : csPlace(ctx.picked, groups, db.cs.lastsub, roles, subMode);
   db.cs.assign[ctx.ev.id+'|'+ctx.slot]={
     ...res, groups, setupKey, notes:res.notes||[],
     gameMode:ctx.mode,
@@ -4513,8 +4569,46 @@ function renderCsSetup(){
           <td><button class="mini admin-only" title="Add a group" onclick="csSetupAdd('${which}')">+</button></td></tr>
       </tbody></table>`;
   };
+  // Which starter-rank (by power, strongest first) goes to which group, for
+  // one Desert setup — this is what csPlaceDesert actually deals against.
+  const slotOrderBlock=meta=>{
+    const groups=db.cs.setups[meta.key]||[];
+    const total=groups.reduce((s,g)=>s+(g.starters||0),0);
+    let order=(meta.slotOrder&&meta.slotOrder.length?meta.slotOrder:csDesertAutoSlotOrder(groups)).slice(0,total);
+    while(order.length<total) order.push(groups[0]?groups[0].key:'');
+    const opts=k=>groups.map(g=>`<option value="${g.key}"${g.key===k?' selected':''}>${csEsc(g.short||g.name)}</option>`).join('');
+    return `<div style="margin-top:10px">
+      <label class="muted" style="font-size:12px;display:block;margin-bottom:4px">THP-rank order — who goes where, strongest starter first</label>
+      <div class="row" style="flex-wrap:wrap;gap:6px">
+        ${order.map((k,i)=>`<span style="display:flex;align-items:center;gap:3px">
+          <span class="muted" style="font-size:10px">#${i+1}</span>
+          <select class="admin-only" style="width:130px;font-size:12px" onchange="csDesertSlotEdit('${meta.key}',${i},this.value)">${opts(k)}</select></span>`).join('')}
+      </div>
+      <div class="row" style="margin-top:6px"><button class="mini admin-only" onclick="csDesertSlotSpread('${meta.key}')">↻ Spread evenly</button></div>
+    </div>`;
+  };
+  const desertList=csDesertSetupList();
+  const desertHtml=desertList.map(meta=>`
+    <div style="margin:18px 0 0;padding:12px;border:1px solid var(--border);border-radius:8px">
+      <div class="row" style="align-items:flex-start;gap:10px">
+        <div style="flex:1">
+          <input class="admin-only" value="${csEsc(meta.title||meta.key)}" placeholder="Setup title"
+            style="width:100%;font-weight:600;background:transparent;border:1px solid var(--border);border-radius:6px;padding:4px 8px"
+            onchange="csDesertMetaEdit('${meta.key}','title',this.value)">
+          <textarea class="admin-only" placeholder="Description — shown to whoever's picking a setup on Storm Build"
+            style="width:100%;margin-top:6px;font-size:12px;min-height:38px;background:transparent;border:1px solid var(--border);border-radius:6px;padding:4px 8px"
+            onchange="csDesertMetaEdit('${meta.key}','description',this.value)">${csEsc(meta.description||'')}</textarea>
+        </div>
+        <button class="mini admin-only" title="Remove this setup" ${desertList.length<=1?'disabled':''} onclick="csDesertSetupDelNew('${meta.key}')">🗑</button>
+      </div>
+      ${block(meta.key,'Groups',"every player is a starter or a sub somewhere — Desert isn't a 2v1")}
+      ${slotOrderBlock(meta)}
+    </div>`).join('')
+    + `<div class="row" style="margin-top:10px"><button class="btn ghost admin-only" onclick="csDesertSetupAddNew()">+ Add another Desert setup</button></div>`;
   el.innerHTML=
-      block('desert','Desert Storm',"one setup — Desert isn't a 2v1")
+      `<h3 style="margin-top:0">Desert Storm</h3>
+       <p class="help" style="margin:-6px 0 0">Create as many named setups as you like — pick which one to use each week from a dropdown on Storm Build.</p>`
+    + desertHtml
     + block('rulebringers','Canyon · Rulebringers',"when we're the lone alliance")
     + block('dawnbreakers','Canyon · Dawnbreakers',"when we're one of the pair — mid groups get a Left/Right label at assign time");
   renderCsBriefing();
@@ -4589,8 +4683,8 @@ window.csSetupDel=(which,i)=>{
 window.csSetupReset=()=>{
   const wrap=document.createElement('div'); wrap.className='modal';
   wrap.innerHTML=`<div class="box"><h3>Reset squad setup?</h3>
-    <p class="help">Reset all three group setups <b>and the briefing wording</b> back to the defaults?
-     Existing line-ups are not affected.</p>
+    <p class="help">Reset Canyon's two setups, <b>all custom Desert setups</b> (back to just the one default),
+     and the briefing wording, back to the defaults? Existing line-ups are not affected.</p>
     <div class="row" style="margin:12px 0 0"><button class="btn warn" id="crY">Reset</button>
     <button class="btn ghost" id="crN">Cancel</button></div></div>`;
   document.body.appendChild(wrap);
@@ -4599,8 +4693,56 @@ window.csSetupReset=()=>{
     db.cs.setups={rulebringers:JSON.parse(JSON.stringify(CS_DEFAULT_RB)),
                   dawnbreakers:JSON.parse(JSON.stringify(CS_DEFAULT_DB)),
                   desert:JSON.parse(JSON.stringify(CS_DEFAULT_DS))};
+    db.cs.desertSetups=[{key:'desert', title:'Standard Desert Setup', description:'', slotOrder:[...DESERT_SLOTS]}];
     db.cs.briefing=JSON.parse(JSON.stringify(CS_BRIEFING_DEFAULTS));
+    csDesertSetupSel=null;
     save(); wrap.remove(); renderCsSetup(); toast('Reset to defaults');
+  };
+};
+
+/* ---- Desert Storm: multiple named setups ----------------------------- */
+window.csDesertMetaEdit=(key,field,val)=>{
+  const meta=(db.cs.desertSetups||[]).find(s=>s.key===key); if(!meta) return;
+  if(field==='title'){ val=String(val).trim(); if(!val){ renderCsSetup(); return; } }
+  else if(field==='description'){ val=String(val); }
+  else return;
+  meta[field]=val; save(); toast('Saved');
+};
+window.csDesertSlotEdit=(key,i,val)=>{
+  const meta=(db.cs.desertSetups||[]).find(s=>s.key===key); if(!meta) return;
+  if(!Array.isArray(meta.slotOrder)) meta.slotOrder=csDesertAutoSlotOrder(db.cs.setups[key]||[]);
+  meta.slotOrder[i]=val;
+  save(); toast('Saved');
+};
+window.csDesertSlotSpread=key=>{
+  const meta=(db.cs.desertSetups||[]).find(s=>s.key===key); if(!meta) return;
+  meta.slotOrder=csDesertAutoSlotOrder(db.cs.setups[key]||[]);
+  save(); renderCsSetup(); toast('Spread evenly');
+};
+window.csDesertSetupAddNew=()=>{
+  const key='d'+csUid();
+  db.cs.desertSetups=db.cs.desertSetups||[];
+  db.cs.desertSetups.push({key, title:'New Desert setup', description:'', slotOrder:csDesertAutoSlotOrder(CS_DEFAULT_DS)});
+  db.cs.setups[key]=JSON.parse(JSON.stringify(CS_DEFAULT_DS));
+  save(); renderCsSetup(); toast('Setup added');
+};
+window.csDesertSetupDelNew=key=>{
+  const list=db.cs.desertSetups||[];
+  if(list.length<=1){ toast('Keep at least one Desert setup','err'); return; }
+  const meta=list.find(s=>s.key===key); if(!meta) return;
+  const wrap=document.createElement('div'); wrap.className='modal';
+  wrap.innerHTML=`<div class="box"><h3>Remove this Desert setup?</h3>
+    <p class="help">Remove <b>${csEsc(meta.title||meta.key)}</b>? Line-ups already built with it keep their own
+     snapshot and are not affected.</p>
+    <div class="row" style="margin:12px 0 0"><button class="btn warn" id="dsdY">Remove</button>
+    <button class="btn ghost" id="dsdN">Cancel</button></div></div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#dsdN').onclick=()=>wrap.remove();
+  wrap.querySelector('#dsdY').onclick=()=>{
+    db.cs.desertSetups=list.filter(s=>s.key!==key);
+    delete db.cs.setups[key];
+    if(csDesertSetupSel===key) csDesertSetupSel=null;
+    save(); wrap.remove(); renderCsSetup(); toast('Setup removed');
   };
 };
 
@@ -4719,7 +4861,7 @@ document.getElementById('csImport').onchange=e=>{
   r.readAsText(f);
 };
 
-for(const n of ['csEdit','csDelete','csPullRoster','csAskAlliance','csClear','csSetupEdit','csSetupReset','csLogSubs','csOpenLink','csUnlink','csSetupAdd','csSetupDel','csBriefEdit','syncThpFromKillTracker']){
+for(const n of ['csEdit','csDelete','csPullRoster','csAskAlliance','csClear','csSetupEdit','csSetupReset','csLogSubs','csOpenLink','csUnlink','csSetupAdd','csSetupDel','csBriefEdit','syncThpFromKillTracker','csDesertMetaEdit','csDesertSlotEdit','csDesertSlotSpread','csDesertSetupAddNew','csDesertSetupDelNew']){
   const f=window[n];
   if(typeof f==='function') window[n]=function(){
     if(!isAdmin()){ toast('View only — log in as admin to make changes','err'); return; }
