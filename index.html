@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 09:44 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 10:33 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -3680,6 +3680,13 @@ function csMailText(team, groups, assign, fmt){
 /* =====================================================================
    POSTER — dynamic SVG mission briefing
    ===================================================================== */
+// Whether a group gets the poster's accent colour (and, for the on-screen
+// board, its "FREE ROAMERS"-style name check) — Pete can tick this per group
+// on Storm Setup to override the default, which is "yes, if it's the roam-
+// kind group" (matches how every setup worked before this override existed).
+function csGroupHighlighted(g){
+  return g.highlight!==undefined ? !!g.highlight : g.kind==='roam';
+}
 function csPoster(team, groups, assign){
   const desertMode=(assign.gameMode||'canyon')==='desert';
   const T=(desertMode?CS_THEME_DESERT:CS_THEME)[team], W=680;
@@ -3697,7 +3704,7 @@ function csPoster(team, groups, assign){
 
   const card=(g,idx,x,y)=>{
     const slot=assign.result[g.key];
-    const isRoam=g.kind==='roam';
+    const isRoam=csGroupHighlighted(g);
     const namedRoamers=isRoam&&/roam/i.test(g.name);   // Canyon's Free-Roamers vs Desert's Float
     const acc=isRoam?T.accent2:T.accent;
     const fill=isRoam?(team==='A'?'#2a1206':'#2a1c06'):T.panel;
@@ -4379,11 +4386,12 @@ function csLineupHtml(A,team){
       : `<span class="cap" style="color:var(--red)">${csEsc(p.t1||'')} no power</span>`;
   const cards=A.groups.map((g,i)=>{
     const slot=A.result[g.key];
-    // Only actually call it "FREE ROAMERS" when the group's own name says so
-    // (Canyon's Free-Roamers group) — a custom roam-kind group with its own
-    // name (e.g. a Desert "Hospital") keeps that name instead, same rule the
-    // poster already uses, so the board and the poster never disagree.
-    const roam=g.kind==='roam'&&/roam/i.test(g.name);
+    // Only actually call it "FREE ROAMERS" when it's the highlighted group
+    // (see csGroupHighlighted) AND the group's own name says so (Canyon's
+    // Free-Roamers group) — a custom roam-kind group with its own name (e.g.
+    // a Desert "Hospital") keeps that name instead, same rule the poster
+    // uses, so the board and the poster never disagree.
+    const roam=csGroupHighlighted(g)&&/roam/i.test(g.name);
     const rows=slot.pairs.length
       ? slot.starters.map(st=>{
           const pr=slot.pairs.find(p=>p.starter.id===st.id);
@@ -4584,17 +4592,19 @@ function renderCsSetup(){
     const tS=gs.reduce((s,g)=>s+g.starters,0), tB=gs.reduce((s,g)=>s+g.subs,0);
     const kinds=k=>KINDS.map(([v,d])=>`<option value="${v}"${v===k?' selected':''} title="${d}">${v}</option>`).join('');
     return `<h3 style="margin-top:18px">${title} <span class="muted" style="font-weight:400;font-size:12px">${note}</span></h3>
-      <table><thead><tr><th>Group</th><th style="width:90px">Kind</th><th style="width:80px">Starters</th><th style="width:80px">Subs</th><th></th></tr></thead><tbody>
+      <table><thead><tr><th>Group</th><th style="width:90px">Kind</th><th style="width:80px">Starters</th><th style="width:80px">Subs</th>
+        <th style="width:60px" title="Give this group the accent colour on the poster (defaults to whichever group is 'roam' kind)">Colour</th><th></th></tr></thead><tbody>
       ${gs.map((g,i)=>`<tr>
         <td><input value="${csEsc(g.name)}" style="width:100%" onchange="csSetupEdit('${which}',${i},'name',this.value)">
             <input value="${csEsc(g.short)}" style="width:100%;margin-top:4px;font-size:11px;color:var(--muted)" onchange="csSetupEdit('${which}',${i},'short',this.value)"></td>
         <td><select class="admin-only" style="width:80px" onchange="csSetupEdit('${which}',${i},'kind',this.value)">${kinds(g.kind)}</select></td>
         <td><input type="number" min="0" max="12" value="${g.starters}" style="width:66px" onchange="csSetupEdit('${which}',${i},'starters',+this.value)"></td>
         <td><input type="number" min="0" max="12" value="${g.subs}" style="width:66px" onchange="csSetupEdit('${which}',${i},'subs',+this.value)"></td>
+        <td style="text-align:center"><input type="checkbox" class="admin-only" title="Give this group the accent colour on the poster" ${csGroupHighlighted(g)?'checked':''} onchange="csSetupEdit('${which}',${i},'highlight',this.checked)"></td>
         <td><button class="mini admin-only" title="Remove this group" onclick="csSetupDel('${which}',${i})">🗑</button></td>
       </tr>`).join('')}
       <tr><td colspan="2" class="muted">Total</td>
-          <td><b>${tS}</b></td><td><b>${tB}</b></td><td></td></tr>
+          <td><b>${tS}</b></td><td><b>${tB}</b></td><td></td><td></td></tr>
       </tbody></table>
       <div class="row" style="margin-top:8px"><button class="btn ghost admin-only" onclick="csSetupAdd('${which}')">+ Add group</button></div>`;
   };
@@ -4682,6 +4692,8 @@ window.csSetupEdit=(which,i,field,val)=>{
     val=Math.max(0,Math.min(12,parseInt(val,10)||0));
   } else if(field==='kind'){
     if(!['power','mid','roam'].includes(val)) return;
+  } else if(field==='highlight'){
+    val=!!val;
   } else {
     val=String(val).trim();
     if(!val) { renderCsSetup(); return; }        // don't allow a blank name
