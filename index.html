@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-22 12:45 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-23 17:08 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -507,7 +507,12 @@ function migrate(d){
   // ---- Canyon Storm module data (kept apart from the selection data) ----
   d.cs=d.cs||{};
   d.cs.roster=d.cs.roster||CS_SEED.map(p=>({...p}));
-  d.cs.roster.forEach(p=>{ if(!Array.isArray(p.aliases)) p.aliases=[]; if(p.dsRank===undefined) p.dsRank=null; if(p.uid===undefined) p.uid=null; if(p.powerSource===undefined) p.powerSource=p.powerSyncedAt?'kt':null; });
+  d.cs.roster.forEach(p=>{ if(!Array.isArray(p.aliases)) p.aliases=[]; if(p.dsRank===undefined) p.dsRank=null; if(p.uid===undefined) p.uid=null; if(p.powerSource===undefined) p.powerSource=p.powerSyncedAt?'kt':null;
+    if(p.arena3v3===undefined) p.arena3v3=null;
+    if(p.arena3v3Rank===undefined) p.arena3v3Rank=null;
+    if(p.arena3v3Score===undefined) p.arena3v3Score=null;
+    if(p.arena3v3SyncedAt===undefined) p.arena3v3SyncedAt=null;
+  });
   d.cs.setups=d.cs.setups||{};
   d.cs.setups.rulebringers=d.cs.setups.rulebringers||JSON.parse(JSON.stringify(CS_DEFAULT_RB));
   d.cs.setups.dawnbreakers=d.cs.setups.dawnbreakers||JSON.parse(JSON.stringify(CS_DEFAULT_DB));
@@ -990,18 +995,53 @@ function parsePollSummary(text){
    parsePollSummary's {lines}, since these carry structured uid data through
    to addAppsObjs() rather than being flattened into "Name, avail" text.
    --------------------------------------------------------------------- */
+// A vote's voter objects, when they carry the newer per-voter figures
+// (added 23 Sept 2026 — see storm-results-pipeline export doc), as a
+// {uid,name,heroPower,arena3v3Power,arena3v3Rank,arena3v3Score} list —
+// the fallback source for csApplyMemberFigures() when this export has no
+// attached `members` snapshot (an older export, or one taken before the
+// reader app captured a snapshot).
+function votersToMemberFigures(voteObj){
+  const out=[];
+  if(!voteObj||!voteObj.voters||typeof voteObj.voters!=='object') return out;
+  for(const key of Object.keys(voteObj.voters)){
+    const arr=voteObj.voters[key];
+    if(!Array.isArray(arr)) continue;
+    for(const v of arr){
+      if(!v) continue;
+      if(v.heroPower==null && v.arena3v3Power==null) continue; // nothing new on this voter
+      out.push({uid:v.uid?String(v.uid):null,name:v.name,heroPower:v.heroPower,
+                 arena3v3Power:v.arena3v3Power,arena3v3Rank:v.arena3v3Rank,arena3v3Score:v.arena3v3Score});
+    }
+  }
+  return out;
+}
 function parsePollJSON(text){
   let data;
   try{ data=JSON.parse(text); }catch(e){ return null; }
-  if(!data||typeof data!=='object'||!Array.isArray(data.options)||!data.voters||typeof data.voters!=='object') return null;
+  if(!data||typeof data!=='object') return null;
 
-  const {mode,date}=parsePollHeaderMeta(data.question);
+  // Since 23 Sept 2026 the export can be {kind:'lastwar-vote-export',
+  // votes:[...], members:{...}} rather than one bare vote object — "Use
+  // selected vote" exports a single-entry array, "All votes" can export
+  // several. Storm Manager still only builds one event at a time, so the
+  // first vote feeds the picker either way; every vote in the file shares
+  // the same member snapshot, so votes[0]'s `members` (if any) is enough.
+  let voteObj=data, members=null;
+  if(Array.isArray(data.votes)){
+    if(!data.votes.length) return null;
+    voteObj=data.votes[0];
+    if(data.members && Array.isArray(data.members.players)) members=data.members.players;
+  }
+  if(!voteObj||typeof voteObj!=='object'||!Array.isArray(voteObj.options)||!voteObj.voters||typeof voteObj.voters!=='object') return null;
+
+  const {mode,date}=parsePollHeaderMeta(voteObj.question);
   const items=[];
-  for(const opt of data.options){
+  for(const opt of voteObj.options){
     if(!opt) continue;
     const label=norm(opt.text||'');
     const avail=POLL_AVAIL_MAP[label]!==undefined?POLL_AVAIL_MAP[label]:String(opt.text||'').trim();
-    const voters=data.voters[String(opt.itemId)]||[];
+    const voters=voteObj.voters[String(opt.itemId)]||[];
     if(!Array.isArray(voters)) continue;
     for(const v of voters){
       if(!v||!v.name) continue;
@@ -1009,12 +1049,20 @@ function parsePollJSON(text){
     }
   }
   if(!items.length) return null;
-  return {items,mode,date};
+  // THP + 3v3 power: prefer the attached member snapshot (covers the whole
+  // alliance, not just voters); fall back to whatever's embedded directly
+  // on the voter records if this export has no snapshot attached.
+  const memberFigures=members||votersToMemberFigures(voteObj);
+  return {items,mode,date,memberFigures};
 }
 function applyPollImport(poll){
   if(poll.mode){ document.getElementById('evMode').value=poll.mode; updateModeChip(); updateCanyonSplitVisibility(); }
   if(poll.date) document.getElementById('evDate').value=poll.date;
   if(poll.items) addAppsObjs(poll.items); else addApps(poll.lines);
+  if(poll.memberFigures && poll.memberFigures.length){
+    const {updated,added}=csApplyMemberFigures(poll.memberFigures);
+    if(updated||added) toast(`Storm Players: THP/3v3 power synced for ${updated}${added?`, ${added} added`:''}`);
+  }
 }
 function addAppsResolved(lines){
   // back-compat entry point (plain CSV/paste text, no uid): parse "Name, avail"
@@ -3140,6 +3188,50 @@ function csFindByUid(uid){
   return db.cs.roster.find(x=>x.uid===uid)||null;
 }
 
+/* ---- THP + 3v3 power sync from a vote export's member figures --------
+   Same matching precedent as csImportThpCsv: uid first (survives a
+   rename), name/alias as a fallback, and a figure is only ever written
+   when the incoming value isn't null — the export doc is explicit that
+   any figure can be null when that screen hasn't been captured recently,
+   so a null here must never blank out a value Storm Manager already has.
+   A uid match under a different display name gains that name as an alias
+   rather than being renamed outright — same non-destructive behaviour as
+   the THP CSV sync, so nothing changes what's shown without an admin
+   choosing to (see csEdit) — it just keeps the old name resolvable too. */
+function csApplyMemberFigures(players){
+  if(!Array.isArray(players)||!players.length) return {updated:0,added:0};
+  const now=new Date().toISOString();
+  let updated=0, added=0;
+  for(const m of players){
+    if(!m) continue;
+    const name=(m.name||'').trim();
+    const uid=m.uid?String(m.uid):null;
+    if(!name&&!uid) continue;
+    let rec=(uid&&csFindByUid(uid))||(name?csFind(name):null);
+    if(!rec){
+      if(!name) continue;
+      rec={id:csUid(),name,power:0,t1:'Tank',ptype:'Holder',aliases:[],dsRank:null,uid:null,
+           arena3v3:null,arena3v3Rank:null,arena3v3Score:null,arena3v3SyncedAt:null};
+      db.cs.roster.push(rec);
+      added++;
+    } else updated++;
+    if(uid&&!rec.uid) rec.uid=uid;
+    if(name){
+      rec.aliases=rec.aliases||[];
+      if(norm(name)!==norm(rec.name)&&!rec.aliases.some(a=>norm(a)===norm(name))) rec.aliases.push(name);
+    }
+    if(m.heroPower!=null){ rec.power=Math.round(m.heroPower); rec.powerSyncedAt=now; rec.powerSource='members'; }
+    if(m.arena3v3Power!=null){
+      rec.arena3v3=Math.round(m.arena3v3Power);
+      if(m.arena3v3Rank!=null) rec.arena3v3Rank=m.arena3v3Rank;
+      if(m.arena3v3Score!=null) rec.arena3v3Score=m.arena3v3Score;
+      rec.arena3v3SyncedAt=now;
+    }
+  }
+  if(updated||added){ save(); renderCsPlayers(); }
+  return {updated,added};
+}
+
 // Merge two CS roster records that turned out to be the same person — e.g. a THP
 // CSV or a plain CSV import created a fresh record because the name didn't match
 // an existing one exactly (a case/spacing difference, an in-game rename before a
@@ -3866,12 +3958,18 @@ function renderCsPlayers(){
     </div>`).join('')}
   </div>`:'';
 
-  wrap.innerHTML=`${dupesHtml}<table><thead><tr><th>Name</th><th>Power</th><th>T1 type</th><th>Player type</th><th class="admin-only">DS Ranking</th><th></th></tr></thead><tbody>${
+  const srcBadge=(src,syncedAt)=>{
+    if(!syncedAt) return '';
+    const [label,title]=({csv:['CSV','a THP CSV import'],kt:['KT',"Kill Tracker's Total Hero Power feed"],members:['VOTE',"a vote export's member snapshot"]})[src]||['?','an unknown source'];
+    return ` <span class="badge b-noon" title="Set from ${title}, synced ${new Date(syncedAt).toLocaleString()}">${label}</span>`;
+  };
+  wrap.innerHTML=`${dupesHtml}<table><thead><tr><th>Name</th><th>Power (THP)</th><th>3v3 Power</th><th>T1 type</th><th>Player type</th><th class="admin-only">DS Ranking</th><th></th></tr></thead><tbody>${
     shown.map(p=>`<tr>
       <td><b>${csEsc(p.name)}</b>${inRoster(p.name)?'':' <span class="badge b-ban" title="No matching player on the Roster tab">not on roster</span>'}
         ${(p.aliases||[]).length?`<div class="muted" style="font-size:11px">also: ${p.aliases.map(a=>
           `${csEsc(a)} <button class="mini admin-only" title="Remove this link" onclick="csUnlink('${p.id}','${csEsc(a).replace(/'/g,"&#39;")}')">✕</button>`).join(', ')}</div>`:''}</td>
-      <td${p.power?'':' style="color:var(--red)"'}>${p.power?p.power.toLocaleString():'— not set'}${p.powerSyncedAt?` <span class="badge b-noon" title="Set from ${p.powerSource==='csv'?'a THP CSV import':"Kill Tracker's Total Hero Power"}, synced ${new Date(p.powerSyncedAt).toLocaleString()}">${p.powerSource==='csv'?'CSV':'KT'}</span>`:''}</td>
+      <td${p.power?'':' style="color:var(--red)"'}>${p.power?p.power.toLocaleString():'— not set'}${srcBadge(p.powerSource,p.powerSyncedAt)}</td>
+      <td${p.arena3v3?'':' style="color:var(--red)"'} title="${p.arena3v3Rank||p.arena3v3Score?`Arena rank #${p.arena3v3Rank||'?'} · score ${p.arena3v3Score?p.arena3v3Score.toLocaleString():'?'}`:''}">${p.arena3v3?p.arena3v3.toLocaleString():'— not set'}${p.arena3v3SyncedAt?` <span class="badge b-noon" title="Set from a vote export's member snapshot, synced ${new Date(p.arena3v3SyncedAt).toLocaleString()}">VOTE</span>`:''}</td>
       <td><span class="badge b-noon">${csEsc(p.t1)}</span></td>
       <td><span class="badge ${p.ptype==='Roamer'?'b-eve':'b-wait'}">${csEsc(p.ptype)}</span></td>
       <td class="admin-only"><select onchange="setDsRank('${p.id}',this.value)">
@@ -3882,7 +3980,7 @@ function renderCsPlayers(){
         <button class="mini" onclick="csEdit('${p.id}')">✏️</button>
         <button class="mini" title="Merge a duplicate CS record into this one" onclick="csUiMerge('${p.id}')">🔀</button>
         <button class="mini" onclick="csDelete('${p.id}')">🗑</button></td>
-    </tr>`).join('')||'<tr><td colspan="6" class="muted">No CS records yet.</td></tr>'
+    </tr>`).join('')||'<tr><td colspan="7" class="muted">No CS records yet.</td></tr>'
   }</tbody></table>`;
 }
 window.setDsRank=(id,val)=>{
@@ -3900,8 +3998,10 @@ window.csEdit=id=>{
   wrap.innerHTML=`<div class="box"><h3>${id?'Edit':'Add'} CS record</h3>
     <label class="muted" style="font-size:12px">Name</label>
     <input id="csfName" value="${csEsc(p.name)}" placeholder="In-game name">
-    <label class="muted" style="font-size:12px">Power</label>
+    <label class="muted" style="font-size:12px">Power (THP)</label>
     <input id="csfPower" type="number" value="${p.power||0}">
+    <label class="muted" style="font-size:12px">3v3 Power</label>
+    <input id="csfArena" type="number" value="${p.arena3v3||0}">
     <label class="muted" style="font-size:12px">T1 type</label>
     <select id="csfT1" style="width:100%;margin-bottom:10px">${CS_T1.map(t=>`<option${t===p.t1?' selected':''}>${t}</option>`).join('')}</select>
     <label class="muted" style="font-size:12px">Player type</label>
@@ -3920,7 +4020,11 @@ window.csEdit=id=>{
   wrap.querySelector('#csfSave').onclick=()=>{
     const name=wrap.querySelector('#csfName').value.trim();
     if(!name){ toast('Name required','err'); return; }
-    const rec={id:p.id||csUid(),name,power:+wrap.querySelector('#csfPower').value||0,
+    // Spread the existing record first so fields this form doesn't expose —
+    // uid, powerSyncedAt/Source, arena3v3Rank/Score/SyncedAt — survive an
+    // edit instead of being silently wiped (they used to be, before this).
+    const rec={...p, id:p.id||csUid(),name,power:+wrap.querySelector('#csfPower').value||0,
+               arena3v3:+wrap.querySelector('#csfArena').value||0,
                t1:wrap.querySelector('#csfT1').value, ptype:wrap.querySelector('#csfType').value,
                dsRank:wrap.querySelector('#csfDsRank').value||null,
                aliases:p.aliases||[]};
