@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-24 09:03 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-24 15:56 UTC · results v9 (history-screen imports)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -301,12 +301,13 @@
 <section id="tab-rescanyon" style="display:none">
   <div class="panel">
     <h2>Canyon Storm results</h2>
-    <p class="help">Scores come straight from the in-game result mails, read off the PC that plays (reader app, Event results tab &rarr; Copy all, or <code>event_reports.py --bundle</code>). Paste below: either one match's JSON or the combined <code>storm_results.json</code> — both work, and re-pasting something already here just refreshes it. Importing also fills in attendance on the History tab: anyone picked who doesn't appear in a result is marked a no-show. <b>Locked events are never touched</b> &mdash; unlock one there first if you want results applied to it. Only rows still showing as pending are filled in silently; if a result disagrees with a mark you've already set, you're asked before anything changes.</p>
+    <p class="help">Scores come straight from the in-game result mails, read off the PC that plays (reader app, Event results tab &rarr; Copy all, or <code>event_reports.py --bundle</code>). Paste below: either one match's JSON or the combined <code>storm_results.json</code> — both work, and re-pasting something already here just refreshes it. Importing also fills in attendance on the History tab: anyone picked who doesn't appear in a result is marked a no-show. <b>Locked events are never touched</b> &mdash; unlock one there first if you want results applied to it. Only rows still showing as pending are filled in silently; if a result disagrees with a mark you've already set, you're asked before anything changes. Older matches pulled from the in-game history screen (no player breakdown, just the scores) import fine too, straight into the Record/Matches below &mdash; they never touch attendance, since there's no player list to check it against.</p>
     <div id="resImportCanyon"></div>
   </div>
   <div class="panel"><div class="res-head"><h2>Record</h2><button class="mini" onclick="resPng('canyon','record')">⬇ Download PNG</button></div><div id="resRecordCanyon"></div></div>
   <div class="panel"><div class="res-head"><h2>Players</h2><button class="mini" onclick="resPng('canyon','players')">⬇ Download PNG</button></div><p class="help" style="margin-top:0">Click any heading to sort by it; click it again to flip the order.</p><div id="resPlayersCanyon"></div></div>
   <div class="panel"><div class="res-head"><h2>Matches</h2><div class="row" style="margin:0"><button class="mini admin-only" onclick="resDeleteAll('canyon')">Remove all</button><button class="mini" onclick="resPng('canyon','matches')">⬇ Download PNG</button></div></div><div id="resMatchesCanyon"></div></div>
+  <div class="panel"><div class="res-head"><h2>Win % over time</h2><button class="mini" onclick="resChartPng('canyon')">⬇ Download PNG</button></div><p class="help" style="margin-top:0">Rolling win rate over the last ~10 matches at each point — shows the swings "last 8 weeks" alone can't.</p><div id="resChartCanyon"></div></div>
 </section>
 <section id="tab-resdesert" style="display:none">
   <div class="panel">
@@ -317,6 +318,7 @@
   <div class="panel"><div class="res-head"><h2>Record</h2><button class="mini" onclick="resPng('desert','record')">⬇ Download PNG</button></div><div id="resRecordDesert"></div></div>
   <div class="panel"><div class="res-head"><h2>Players</h2><button class="mini" onclick="resPng('desert','players')">⬇ Download PNG</button></div><p class="help" style="margin-top:0">Click any heading to sort by it; click it again to flip the order.</p><div id="resPlayersDesert"></div></div>
   <div class="panel"><div class="res-head"><h2>Matches</h2><div class="row" style="margin:0"><button class="mini admin-only" onclick="resDeleteAll('desert')">Remove all</button><button class="mini" onclick="resPng('desert','matches')">⬇ Download PNG</button></div></div><div id="resMatchesDesert"></div></div>
+  <div class="panel"><div class="res-head"><h2>Win % over time</h2><button class="mini" onclick="resChartPng('desert')">⬇ Download PNG</button></div><p class="help" style="margin-top:0">Rolling win rate over the last ~10 matches at each point — shows the swings "last 8 weeks" alone can't.</p><div id="resChartDesert"></div></div>
 </section>
 <section id="tab-notes" style="display:none">
   <div class="panel">
@@ -5206,10 +5208,13 @@ function importResultsBundle(text){
   let added=0,updated=0,dupes=0,foreign=0;
   for(const r of reports){
     if(!r||!r.id) continue;
-    // A result with none of our players in it is somebody else's match — it can
-    // only arrive from a PC running several accounts, and it would otherwise
-    // join our record with believable-looking scores.
-    if(!(r.players||[]).length){ foreign++; continue; }
+    // A result with none of our players in it is normally somebody else's
+    // match — it can only arrive from a PC running several accounts, and it
+    // would otherwise join our record with believable-looking scores. The
+    // one exception is a report that says up front it has no player
+    // breakdown (playersKnown:false — the in-game history screen only gives
+    // scores, not a roster), which is still ours, just thinner.
+    if(r.playersKnown!==false&&!(r.players||[]).length){ foreign++; continue; }
     if(db.results.reports[r.id]){          // same mail, re-pasted
       db.results.reports[r.id]=r; updated++; continue;
     }
@@ -5257,6 +5262,12 @@ function planAttendanceFromResults(){
   const plan=[], skipped=[], locked=[];
   const groups={};
   for(const r of resReports('canyon').concat(resReports('desert'))){
+    // No player breakdown (playersKnown:false, e.g. imported from the in-game
+    // history screen rather than a result mail) means there's no roster to
+    // compare against who was picked — leave attendance alone entirely for
+    // these rather than risk marking a whole squad as no-shows on a date
+    // that happens to coincide with a real event.
+    if(r.playersKnown===false) continue;
     const k=r.mode+'|'+r.date; (groups[k]=groups[k]||[]).push(r);
   }
   for(const gk of Object.keys(groups)){
@@ -5344,6 +5355,29 @@ function applyAttendanceFromResults(){
   return out;
 }
 
+/* How many weeks count as "recent form" on the Record table — shared between
+   both tabs (like the pair tracker above), stored so it survives a refresh. */
+const RES_FORM_DEFAULT=8, RES_FORM_OPTIONS=[4,8,12,16];
+function resFormWeeks(){
+  const v=(db.results&&db.results.formWeeks)||RES_FORM_DEFAULT;
+  return RES_FORM_OPTIONS.includes(v)?v:RES_FORM_DEFAULT;
+}
+window.resSetFormWeeks=function(value){
+  db.results=db.results||{};
+  db.results.formWeeks=Math.max(1,Math.round(+value||RES_FORM_DEFAULT));
+  save();
+  renderResults('canyon'); renderResults('desert');
+};
+// A report's own timestamp when it has one (mail-sourced), else midnight UTC
+// on its date (history-screen imports only carry a date) — good enough to
+// place it in the right week/year bucket either way.
+function resTime(r){
+  const t=Date.parse(r.utc||'');
+  if(!isNaN(t)) return t;
+  const t2=Date.parse((r.date||'')+'T00:00:00Z');
+  return isNaN(t2)?0:t2;
+}
+
 function resultsStats(mode){
   const reps=resReports(mode);
   const by={};
@@ -5382,7 +5416,14 @@ function resultsStats(mode){
     return {n,w,l:n-w,pct:n?Math.round(w/n*1000)/10:0,us,them,
             avgUs:n?Math.round(us/n):0,avgThem:n?Math.round(them/n):0};
   };
-  const record={all:rec(reps)};
+  const formWeeks=resFormWeeks();
+  const formCutoff=Date.now()-formWeeks*7*86400000;
+  const year=new Date().getFullYear();
+  const record={
+    all:rec(reps),
+    form:rec(reps.filter(r=>resTime(r)>=formCutoff)),
+    year:rec(reps.filter(r=>(r.date||'').slice(0,4)===String(year)))
+  };
   if(mode==='canyon'){
     record.rulebringers=rec(reps.filter(r=>r.side==='rulebringers'));
     record.dawnbreakers=rec(reps.filter(r=>r.side==='dawnbreakers'));
@@ -5390,7 +5431,7 @@ function resultsStats(mode){
     record.noon=rec(reps.filter(r=>r.slot==='noon'));
     record.evening=rec(reps.filter(r=>r.slot==='evening'));
   }
-  return {reps,players,record};
+  return {reps,players,record,formWeeks,year};
 }
 
 
@@ -5457,7 +5498,7 @@ function resPairStatus(mode){
 
 function renderResults(mode){
   const Cap=mode==='canyon'?'Canyon':'Desert';
-  const {reps,players,record}=resultsStats(mode);
+  const {reps,players,record,formWeeks,year}=resultsStats(mode);
 
   // ---- import box (same importer on both tabs) ----
   const imp=document.getElementById('resImport'+Cap);
@@ -5474,15 +5515,37 @@ function renderResults(mode){
       '<tr><td><b>'+esc(label)+'</b></td><td>'+r.w+'W – '+r.l+'L</td><td>'+r.pct+'%</td>'+
       '<td>'+nfmt(r.us)+'</td><td>'+nfmt(r.them)+'</td>'+
       '<td>'+nfmt(r.avgUs)+'</td><td>'+nfmt(r.avgThem)+'</td></tr>';
-    const rows=mode==='canyon'
-      ? line('Overall',record.all)+line('As Rulebringers (1 team)',record.rulebringers)+line('As Dawnbreakers (2 teams)',record.dawnbreakers)
-      : line('Overall',record.all)+line('Noon session',record.noon)+line('Evening session',record.evening);
+    // Overall/form/year always show a row, even 0–0 (line() above hides an
+    // empty split instead — fine for "as Rulebringers", not for the headline
+    // rows, which should always be there for the form-window picker to point at).
+    const line0=(label,r)=>{
+      const rr=r||{n:0,w:0,l:0,pct:0,us:0,them:0,avgUs:0,avgThem:0};
+      const dim=rr.n?'':' class="muted"';
+      return '<tr'+dim+'><td><b>'+esc(label)+'</b></td><td>'+rr.w+'W – '+rr.l+'L</td><td>'+rr.pct+'%</td>'+
+        '<td>'+nfmt(rr.us)+'</td><td>'+nfmt(rr.them)+'</td>'+
+        '<td>'+nfmt(rr.avgUs)+'</td><td>'+nfmt(rr.avgThem)+'</td></tr>';
+    };
+    const headline=line0('Overall',record.all)+line0('Last '+formWeeks+' weeks (form)',record.form)+line0(String(year),record.year);
+    const splits=mode==='canyon'
+      ? line('As Rulebringers (1 team)',record.rulebringers)+line('As Dawnbreakers (2 teams)',record.dawnbreakers)
+      : line('Noon session',record.noon)+line('Evening session',record.evening);
+    const formPicker='<div class="row" style="margin:0 0 8px;align-items:baseline">'+
+      '<span class="muted" style="font-size:12px">Form window:</span>'+
+      '<select class="admin-only" onchange="resSetFormWeeks(this.value)" style="padding:3px 6px">'+
+        RES_FORM_OPTIONS.map(w=>'<option value="'+w+'"'+(w===formWeeks?' selected':'')+'>'+w+' weeks</option>').join('')+
+      '</select></div>';
     box.innerHTML=reps.length
-      ? '<table class="grid"><thead><tr><th></th><th>Record</th><th>Win %</th>'+
+      ? formPicker+'<table class="grid"><thead><tr><th></th><th>Record</th><th>Win %</th>'+
         '<th>Our score</th><th>Their score</th><th>Avg ours</th><th>Avg theirs</th></tr></thead>'+
-        '<tbody>'+rows+'</tbody></table>'
+        '<tbody>'+headline+splits+'</tbody></table>'
       : '<p class="muted">No '+RES_MODE_NAME[mode]+' results imported yet.</p>';
   }
+
+  // ---- win % over time ----
+  const cel=document.getElementById('resChart'+Cap);
+  if(cel) cel.innerHTML=reps.length
+    ? resWinChartSVG(mode)
+    : '<p class="muted">No '+RES_MODE_NAME[mode]+' results imported yet.</p>';
 
   // ---- players (every heading sorts) ----
   const pel=document.getElementById('resPlayers'+Cap);
@@ -5564,6 +5627,58 @@ function renderResults(mode){
       : '');
   }
 }
+
+/* ---- win % over time ------------------------------------------------------
+   A rolling-form line: at each match, the win% across that match and the
+   RES_CHART_WINDOW-1 before it (fewer at the very start, whatever's there).
+   Drawn as SVG — crisp at any size on screen, and downloads through the same
+   SVG->canvas->PNG pipeline as the teams image/poster (csDownloadPNG) rather
+   than a second charting mechanism. */
+const RES_CHART_WINDOW=10;
+function resWinChartSVG(mode){
+  const reps=resReports(mode).slice().sort((a,b)=>resTime(a)-resTime(b));
+  const C={bg:'#12151c',grid:'#262d3c',ref:'#3a4257',line:'#f0a832',
+           fill:'rgba(240,168,50,0.14)',text:'#e6eaf2',muted:'#8b96ab'};
+  const W=920,H=280,PAD_L=44,PAD_R=16,PAD_T=20,PAD_B=32;
+  const plotW=W-PAD_L-PAD_R, plotH=H-PAD_T-PAD_B;
+  if(reps.length<2){
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+<rect width="${W}" height="${H}" fill="${C.bg}"/>
+<text x="${W/2}" y="${H/2}" text-anchor="middle" font-size="13" fill="${C.muted}">Not enough results yet for a trend line</text>
+</svg>`;
+  }
+  const win=Math.min(RES_CHART_WINDOW,reps.length);
+  const pts=reps.map((r,i)=>{
+    const slice=reps.slice(Math.max(0,i-win+1),i+1);
+    return {date:r.date,pct:slice.filter(x=>x.win).length/slice.length*100};
+  });
+  const n=pts.length;
+  const px=i=>PAD_L+(n===1?plotW/2:plotW*i/(n-1));
+  const py=pct=>PAD_T+plotH*(1-pct/100);
+  const path=pts.map((p,i)=>(i===0?'M':'L')+px(i).toFixed(1)+','+py(p.pct).toFixed(1)).join(' ');
+  const area=path+' L'+px(n-1).toFixed(1)+','+(PAD_T+plotH).toFixed(1)+
+             ' L'+px(0).toFixed(1)+','+(PAD_T+plotH).toFixed(1)+' Z';
+  const tickN=Math.min(7,n);
+  const ticks=[...Array(tickN)].map((_,i)=>Math.round(i*(n-1)/Math.max(1,tickN-1)));
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+<rect width="${W}" height="${H}" fill="${C.bg}"/>
+${[0,25,50,75,100].map(g=>`<line x1="${PAD_L}" y1="${py(g).toFixed(1)}" x2="${W-PAD_R}" y2="${py(g).toFixed(1)}" stroke="${g===50?C.ref:C.grid}" stroke-width="1"${g===50?' stroke-dasharray="4,4"':''}/>
+<text x="${PAD_L-8}" y="${py(g).toFixed(1)}" text-anchor="end" dominant-baseline="middle" font-size="11" fill="${C.muted}">${g}%</text>`).join('')}
+${ticks.map((i,idx)=>{
+  const anchor=idx===0?'start':(idx===ticks.length-1?'end':'middle');
+  return `<text x="${px(i).toFixed(1)}" y="${H-10}" text-anchor="${anchor}" font-size="10" fill="${C.muted}">${esc(pts[i].date)}</text>`;
+}).join('')}
+<path d="${area}" fill="${C.fill}"/>
+<path d="${path}" fill="none" stroke="${C.line}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>`;
+}
+window.resChartPng=function(mode){
+  try{
+    const svg=resWinChartSVG(mode);
+    csDownloadPNG(svg,mode+'-win-form-'+new Date().toISOString().slice(0,10)+'.png',2)
+      .catch(e=>toast(e.message,'err'));
+  }catch(e){ toast(e.message,'err'); }
+};
 
 /* ---- download a table as a PNG -------------------------------------------
    Drawn onto a canvas from the table's own text rather than screenshotting the
