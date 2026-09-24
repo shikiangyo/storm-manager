@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-24 06:53 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-24 09:03 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -262,6 +262,9 @@
   <div class="panel">
     <h2>History grid</h2>
     <p class="help">Rows = players, columns = event dates. <span class="badge b-start">STA</span> started · <span class="badge b-sub">SUB</span> substitute · <span class="badge b-ban">NS</span> picked but no-show · <span class="badge b-noon">APP</span> applied, not picked · <span class="badge b-eve">NA</span> voted not available · <span class="badge b-ban">BAN</span> applied while banned · <span class="badge b-wait">DNV</span> in roster, didn't vote · — not in roster yet. Click an <b>APP / NA / BAN / DNV</b> cell to correct it — it feeds straight into fairness tie-breaking on the New Event tab, same as the original record would have. STA/SUB/NS cells aren't editable here; open that event above to change starters, subs or attendance.</p>
+    <div class="row" style="margin:0 0 10px">
+      <input id="gridSearch" type="search" placeholder="🔍 Search player…" style="max-width:260px" oninput="renderGrid()">
+    </div>
     <div id="gridArea"></div>
   </div>
 </section>
@@ -2677,14 +2680,18 @@ let gridNames={desert:[],canyon:[]};
 const GRID_EDITABLE=['DNV','APP','NA','BAN']; // STA/SUB/NS are edited from the event itself (History tab)
 function renderGrid(){
   const area=document.getElementById('gridArea'); if(!area) return;
+  // The search box lives outside gridArea (so typing in it doesn't get wiped
+  // out by this function's own innerHTML rebuild) — it just narrows which
+  // rows get rendered (and so which rows a PNG/CSV download below picks up).
+  const searchEl=document.getElementById('gridSearch');
+  const q=norm((searchEl&&searchEl.value)||'');
   let html='';
   for(const mode of ['desert','canyon']){
-    const {evs,names}=gridData(mode);
-    gridNames[mode]=names;
+    const {evs,names:allNames}=gridData(mode);
+    const names=q?allNames.filter(n=>norm(n).includes(q)):allNames;
+    gridNames[mode]=names; // gridEditCell's row index must match what's actually rendered below
     if(!evs.length) continue;
-    html+=`<h3 style="color:${mode==='desert'?'var(--accent)':'var(--accent2)'}">${mode==='desert'?'🏜️ Desert Storm':'🏞️ Canyon Storm'} <button class="mini" onclick="exportGrid('${mode}')">⬇ Export grid CSV</button></h3>
-      <div style="overflow-x:auto"><table><tr><th>Player</th>${evs.map(e=>`<th>${e.date}</th>`).join('')}</tr>`+
-      names.map((n,i)=>`<tr><td>${esc(n)}</td>${evs.map(ev=>{
+    const body=names.map((n,i)=>`<tr><td>${esc(n)}</td>${evs.map(ev=>{
         const note=gridNote(ev,n);
         const v=gridValue(ev,n);
         const clickable=GRID_EDITABLE.includes(v);
@@ -2692,7 +2699,13 @@ function renderGrid(){
         const attrs=clickable?` style="cursor:pointer" onclick="gridEditCell('${mode}',${ev.id},${i})"`:'';
         const t=[note,tip].filter(Boolean).join(' — ');
         return `<td${t?` title="${esc(t)}"`:''}${attrs}>${gridBadge(v)}${note?' <span class="muted">🗒</span>':''}</td>`;
-      }).join('')}</tr>`).join('')+'</table></div>';
+      }).join('')}</tr>`).join('');
+    html+=`<h3 style="color:${mode==='desert'?'var(--accent)':'var(--accent2)'}">${mode==='desert'?'🏜️ Desert Storm':'🏞️ Canyon Storm'}
+      <button class="mini" onclick="exportGrid('${mode}')">⬇ Export grid CSV</button>
+      <button class="mini" onclick="downloadGridPng('${mode}')">⬇ Download PNG</button></h3>
+      <div style="overflow-x:auto"><table id="gridTable-${mode}"><thead><tr><th>Player</th>${evs.map(e=>`<th>${e.date}</th>`).join('')}</tr></thead>
+      <tbody>${body}</tbody></table></div>
+      ${(q&&!names.length)?`<p class="muted">No players match "${esc(searchEl.value.trim())}".</p>`:''}`;
   }
   area.innerHTML=html||'<p class="muted">No saved events yet — the grid builds itself as you run events.</p>';
 }
@@ -2743,11 +2756,34 @@ function setGridStatus(ev,name,val){
   renderEvents();
   toast(`${name} — ${ev.date}: ${before||'—'} → ${val}`);
 }
+// Both exports below respect whatever's currently in the search box — search
+// for one player first and "download the grid" downloads just their row;
+// leave it empty and it's the whole grid, same as before.
 window.exportGrid=mode=>{
-  const {evs,names}=gridData(mode);
+  const searchEl=document.getElementById('gridSearch');
+  const q=norm((searchEl&&searchEl.value)||'');
+  const {evs,names:allNames}=gridData(mode);
+  const names=q?allNames.filter(n=>norm(n).includes(q)):allNames;
+  if(!names.length){ toast('No players match that search','err'); return; }
   let csv='player,'+evs.map(e=>e.date).join(',')+'\n';
   for(const n of names) csv+=n+','+evs.map(ev=>gridValue(ev,n)).join(',')+'\n';
   download(`${mode}-history-grid.csv`,csv,'text/csv');
+};
+window.downloadGridPng=mode=>{
+  const table=document.getElementById('gridTable-'+mode);
+  if(!table){ toast('Nothing to download yet','err'); return; }
+  const searchEl=document.getElementById('gridSearch');
+  const q=(searchEl&&searchEl.value||'').trim();
+  const stamp=new Date().toISOString().slice(0,10);
+  const label=mode==='desert'?'Desert Storm':'Canyon Storm';
+  const slug=q?'-'+norm(q).replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,''):'';
+  try{
+    tableToPng(table,
+      label+' — History grid',
+      q?`Filtered: "${q}"`:'All players',
+      `${mode}-history-grid${slug}-${stamp}.png`);
+    toast('PNG downloaded');
+  }catch(e){ toast(e.message,'err'); }
 };
 
 /* ================= squad setup ================= */
