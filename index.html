@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-23 17:08 UTC · results v8 (no config.db reader)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-24 06:04 UTC · results v8 (no config.db reader)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -4496,14 +4496,17 @@ function csLineupHtml(A,team){
     // a Desert "Hospital") keeps that name instead, same rule the poster
     // uses, so the board and the poster never disagree.
     const roam=csGroupHighlighted(g)&&/roam/i.test(g.name);
-    const rows=slot.pairs.length
-      ? slot.starters.map(st=>{
-          const pr=slot.pairs.find(p=>p.starter.id===st.id);
-          return `<li><span><span onclick="csTap('${st.id}')" ${pill(st.id)}>${csEsc(st.name)}</span> ${tag(st)}</span>
-            ${pr?`<span><span style="color:var(--green)">⇄ </span><span onclick="csTap('${pr.sub.id}')" ${pill(pr.sub.id)}>${csEsc(pr.sub.name)}</span> ${tag(pr.sub)}</span>`
-                :`<span onclick="csTap('${st.id}')" ${pill(st.id)} class="cap">no sub</span>`}</li>`;
-        }).join('')
-      : slot.starters.map(st=>`<li><span><span onclick="csTap('${st.id}')" ${pill(st.id)}>${csEsc(st.name)}</span> ${tag(st)}</span></li>`).join('');
+    // Always show "no sub" (tappable) on an unpaired starter, even in a
+    // group that currently has zero pairs at all (e.g. its Storm Setup sub
+    // count is 0, or its subs all went elsewhere) — it used to only show up
+    // if the group already had at least one pair, which meant a whole
+    // subless group had no way to tap a starter and give them a sub.
+    const rows=slot.starters.map(st=>{
+      const pr=slot.pairs.find(p=>p.starter.id===st.id);
+      return `<li><span><span onclick="csTap('${st.id}')" ${pill(st.id)}>${csEsc(st.name)}</span> ${tag(st)}</span>
+        ${pr?`<span><span style="color:var(--green)">⇄ </span><span onclick="csTap('${pr.sub.id}')" ${pill(pr.sub.id)}>${csEsc(pr.sub.name)}</span> ${tag(pr.sub)}</span>`
+            :`<span onclick="csTap('${st.id}')" ${pill(st.id)} class="cap">no sub</span>`}</li>`;
+    }).join('');
     return `<div class="obj"><h4><span>${roam?'FREE ROAMERS':'GROUP '+(i+1)}</span><span class="cap">${csEsc(g.short)}</span></h4>
       <ul>${rows||'<li class="muted">empty</li>'}</ul></div>`;
   }).join('');
@@ -4617,6 +4620,25 @@ window.csTap=id=>{
       R[from.k].pairs.splice(from.i,1);
       R[to.k].pairs.push({starter,sub:moved});
       A.result=R; A.benched=bench; csSel=null; save(); renderCsBuild(); return;
+    }
+  }
+
+  // Special case: a genuinely benched (never-paired) player + a starter who
+  // currently has no sub → give that starter a new sub, rather than falling
+  // through to a positional swap (which would replace the starter instead).
+  if(!(from&&to)){
+    const benchIdx=pid=>bench.findIndex(p=>p&&p.id===pid);
+    const idxA=benchIdx(a), idxB=benchIdx(b);
+    let benchFrom=-1, starterTo=null;
+    if(idxA>=0 && stB){ benchFrom=idxA; starterTo=stB; }
+    else if(idxB>=0 && stA){ benchFrom=idxB; starterTo=stA; }
+    if(benchFrom>=0 && starterTo){
+      const starter=R[starterTo.k].starters[starterTo.i];
+      if(!hasSub(starterTo.k,starter.id)){
+        const moved=bench.splice(benchFrom,1)[0];
+        R[starterTo.k].pairs.push({starter,sub:moved});
+        A.result=R; A.benched=bench; csSel=null; save(); renderCsBuild(); return;
+      }
     }
   }
 
