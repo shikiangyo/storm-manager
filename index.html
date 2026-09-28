@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-24 16:02 UTC · results v9 (history-screen imports)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-28 17:30 UTC · results v9 (history-screen imports)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -776,6 +776,35 @@ function getPlayer(name){
   return db.players[k];
 }
 /* ---------------------------------------------------------------------
+   Same identity resolution applicantPlayer() below applies, split out so
+   addAppsObjsMatch can decide "known vs needs review" up front without
+   duplicating the logic (and without db.players/renamePlayer side effects —
+   this is read-only). Returns {key, viaUid}: viaUid is true only when the
+   match came from a permanent-identity uid — either this import's own uid
+   matched against db.players, or (new, 2026-09-28) that uid was already on
+   file over on the Storm Players roster (db.cs.roster, built independently
+   from Kill Tracker / vote-figures syncs, which never rename on a uid match
+   — see csApplyMemberFigures) — because a plain name/alias match can go
+   through a stale alias, and only a uid-driven match is trustworthy enough
+   to justify renaming the record (see applicantPlayer()). The cross-check
+   against the Storm Players roster matters because it means an account
+   renamed in-game (e.g. "Exiled" -> "Kiar0") is recognised on the very
+   FIRST vote import that carries the new name, not just the second — as
+   long as that uid was already seen on that roster from an earlier sync.
+   --------------------------------------------------------------------- */
+function resolveApplicant(name,uid){
+  const byUid=uid?resolveKeyByUid(uid):null;
+  if(byUid) return {key:byUid,viaUid:true};
+  const byName=resolveKey(name);
+  if(byName) return {key:byName,viaUid:false};
+  if(uid){
+    const csRec=csFindByUid(uid);
+    const byOldName=csRec&&csRec.name?resolveKey(csRec.name):null;
+    if(byOldName) return {key:byOldName,viaUid:true};
+  }
+  return {key:null,viaUid:false};
+}
+/* ---------------------------------------------------------------------
    Resolve (or create) the player record for one applicant, uid-aware.
    Used by the applications-import pipeline (addAppsObjs/addAppsResolvedObjs)
    so a JSON poll export's permanent per-voter uid — when we've seen it
@@ -791,9 +820,9 @@ function getPlayer(name){
    --------------------------------------------------------------------- */
 function applicantPlayer(name,uid){
   uid=uid||null;
-  const byUid=uid?resolveKeyByUid(uid):null;
-  if(byUid){
-    const p=db.players[byUid];
+  const {key,viaUid}=resolveApplicant(name,uid);
+  if(key){
+    const p=db.players[key];
     // renamePlayer() re-keys db.players (not just p.name) and updates saved-event
     // history to match — needed so a later lookup by the new name (e.g. runAssign
     // placing this applicant into a team) finds this same record instead of
@@ -801,12 +830,7 @@ function applicantPlayer(name,uid){
     // collision with a different existing player, renamePlayer() is a no-op and
     // this record just keeps its current name — the uid still identifies it
     // correctly for this import either way.
-    if(norm(p.name)!==norm(name)) renamePlayer(byUid,name.trim());
-    return p;
-  }
-  const byName=resolveKey(name);
-  if(byName){
-    const p=db.players[byName];
+    if(viaUid && norm(p.name)!==norm(name)) renamePlayer(key,name.trim());
     if(uid && !p.uid) p.uid=uid;
     return p;
   }
@@ -1217,7 +1241,7 @@ function addAppsObjs(items){
 }
 function addAppsObjsMatch(items){
   const known = [], unknown = [];
-  for (const it of items) ((it.uid?resolveKeyByUid(it.uid):null) || resolveKey(it.name) ? known : unknown).push(it);
+  for (const it of items) (resolveApplicant(it.name,it.uid).key ? known : unknown).push(it);
 
   if (!unknown.length){ addAppsResolvedObjs(known); return; }
 
