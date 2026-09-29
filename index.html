@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-28 17:30 UTC · results v9 (history-screen imports)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-29 12:00 UTC · uid renames (Kiar0 takeover)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -744,11 +744,40 @@ async function pullCloud(){
     const v=await cloudLoad();
     if(v&&v.players){ db=migrate(v); try{localStorage.setItem(LS_KEY,JSON.stringify(db));}catch(e){} }
     suppressSave=true; recomputeDerived(); suppressSave=false;   // no echo-write on load
+    if(auth.token&&applyOneOffFixes()) save();
     if(!v&&auth.token&&Object.keys(db.players).length) await cloudSave(); // seed empty cloud from this device
     renderRoster(); renderEvents(); renderSquadTab(); renderAuthBar();
     renderCsPlayers(); renderCsBuildTab(); renderCsSetup(); renderNotes();
     showPendingAssignment(); // pick up (or clear) any shared "3 · Teams" state from another device
   }catch(e){ toast('Could not load shared data: '+e.message,'err'); }
+}
+/* One-off data corrections, each run once (flagged in db.fixes) the first time an
+   admin loads the data after it ships. Admin-only because only an admin can save.
+   - kiar0Takeover (2026-09-29): Kiar0 now plays the account that was "Exiled".
+     The week's vote import matched it by uid but, before the fix in
+     resolveApplicant()/csApplyMemberFigures(), never renamed it — the name
+     "Kiar0" was still held by Kiar0's previous account. Rename Exiled -> Kiar0
+     on both lists; Kiar0's previous account becomes "Kiar0 (old account)" until
+     its new owner's name comes in on a vote import (matched by its uid). */
+function applyOneOffFixes(){
+  db.fixes=db.fixes||{};
+  let changed=false;
+  if(!db.fixes.kiar0Takeover){
+    const csEx=db.cs.roster.find(x=>norm(x.name)==='exiled');
+    const exKey=resolveKey('Exiled');
+    const uid=(csEx&&csEx.uid)||(exKey&&db.players[exKey].uid)||null;
+    if(csEx) csRenameTo(csEx,'Kiar0');
+    if(exKey&&norm(db.players[exKey].name)==='exiled'){
+      const ex=db.players[exKey];
+      // the old Kiar0 record may have picked up this account's uid by name-matching
+      for(const k of Object.keys(db.players)) if(k!==exKey&&uid&&db.players[k].uid===uid) db.players[k].uid=null;
+      releasePlayerName('Kiar0',exKey);
+      renamePlayer(exKey,'Kiar0');
+      if(uid) ex.uid=uid;
+    }
+    db.fixes.kiar0Takeover=true; changed=true;
+  }
+  return changed;
 }
 function toast(msg,err){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2600); }
 const MODES={desert:'Desert Storm',canyon:'Canyon Storm'};
@@ -795,13 +824,24 @@ function getPlayer(name){
 function resolveApplicant(name,uid){
   const byUid=uid?resolveKeyByUid(uid):null;
   if(byUid) return {key:byUid,viaUid:true};
-  const byName=resolveKey(name);
-  if(byName) return {key:byName,viaUid:false};
+  // The Storm Players roster is checked BEFORE plain name matching (it used to be
+  // after — 2026-09-29): when an account takes over a name another player used to
+  // have (Kiar0 moved onto the old "Exiled" account), the incoming name matches the
+  // PREVIOUS owner's record by name, and that's the wrong person. The uid's own
+  // record on the Storm Players roster knows the account's earlier names, so try
+  // those first (skipping the incoming name itself, which may belong to someone else).
   if(uid){
     const csRec=csFindByUid(uid);
-    const byOldName=csRec&&csRec.name?resolveKey(csRec.name):null;
-    if(byOldName) return {key:byOldName,viaUid:true};
+    if(csRec) for(const n of [csRec.name,...(csRec.aliases||[])]){
+      if(!n||norm(n)===norm(name)) continue;
+      const k=resolveKey(n);
+      if(k&&(!db.players[k].uid||db.players[k].uid===uid)) return {key:k,viaUid:true};
+    }
   }
+  const byName=resolveKey(name);
+  // a name match on a record already tied to a DIFFERENT uid is a different account
+  // that used to have this name — not this player
+  if(byName&&!(uid&&db.players[byName].uid&&db.players[byName].uid!==uid)) return {key:byName,viaUid:false};
   return {key:null,viaUid:false};
 }
 /* ---------------------------------------------------------------------
@@ -830,13 +870,38 @@ function applicantPlayer(name,uid){
     // collision with a different existing player, renamePlayer() is a no-op and
     // this record just keeps its current name — the uid still identifies it
     // correctly for this import either way.
-    if(viaUid && norm(p.name)!==norm(name)) renamePlayer(key,name.trim());
+    if(viaUid && norm(p.name)!==norm(name)){ releasePlayerName(name,key); renamePlayer(key,name.trim()); }
     if(uid && !p.uid) p.uid=uid;
     return p;
   }
+  if(uid) releasePlayerName(name,null); // held by a different account (see resolveApplicant) — this is a new player
   const np=getPlayer(name);
   if(uid) np.uid=uid;
   return np;
+}
+/* An in-game name belongs to one account at a time. When a uid-verified import
+   shows `name` now belongs to the record at keepKey (or to a brand-new player,
+   keepKey=null), any OTHER record still holding it is stale — usually the account
+   that had the name before (e.g. Kiar0's previous account, now handed to someone
+   else). That record is renamed to "<name> (old account)" — its history, bans and
+   uid stay with it, and a later import carrying its uid under its new owner's name
+   renames it again automatically — and a record holding it only as a former name
+   just drops that alias. */
+function uniquePlayerName(base){
+  let n=base, i=2;
+  while(resolveKey(n)) n=`${base} ${i++}`;
+  return n;
+}
+function releasePlayerName(name,keepKey){
+  const n=norm(name);
+  for(const k of Object.keys(db.players)){
+    if(k===keepKey) continue;
+    const p=db.players[k]; if(!p) continue;
+    if(norm(p.name)===n){
+      renamePlayer(k,uniquePlayerName(`${p.name} (old account)`));
+      p.aliases=(p.aliases||[]).filter(a=>a!==n); // not theirs any more
+    } else if((p.aliases||[]).includes(n)) p.aliases=p.aliases.filter(a=>a!==n);
+  }
 }
 function renamePlayer(oldKey,newName){
   newName=newName.trim();
@@ -855,6 +920,17 @@ function renamePlayer(oldKey,newName){
     for(const slot of ['noon','evening']) for(const m of ev.teams[slot]) if(match(m.name)) m.name=newName;
     for(const key of ['waitlist','notAvailable','banned','roster']) if(ev[key]) ev[key]=ev[key].map(n=>match(n)?newName:n);
   }
+  // ...and in the not-yet-saved teams / applicant list, so a rename made by an
+  // import mid-event doesn't leave the old name showing in "3 · Teams"
+  const A=db.pendingAssignment;
+  if(A){
+    const fix=x=>typeof x==='string'?(match(x)?newName:x):(x&&x.name&&match(x.name)?{...x,name:newName}:x);
+    for(const slot of ['noon','evening']) if(A.teams&&A.teams[slot]) A.teams[slot]=A.teams[slot].map(fix);
+    for(const key of ['waitlist','notAvailable','banned','notVoted']) if(Array.isArray(A[key])) A[key]=A[key].map(fix);
+    if(A.fair&&A.fair[oldName]&&!A.fair[newName]){ A.fair[newName]=A.fair[oldName]; delete A.fair[oldName]; }
+  }
+  for(const a of apps) if(match(a.name)) a.name=newName;
+  for(const r of review) if(match(r.name)) r.name=newName;
   save(); return null;
 }
 function mergePlayers(targetKey,sourceKey){
@@ -3257,6 +3333,24 @@ function csFindByUid(uid){
   if(!uid) return null;
   return db.cs.roster.find(x=>x.uid===uid)||null;
 }
+// Storm Players counterpart of releasePlayerName()/renamePlayer(): gives `name`
+// to rec (its old name kept as a linked name), and moves any other record still
+// holding it out of the way as "<name> (old account)".
+function csRenameTo(rec,name){
+  const n=norm(name);
+  for(const x of db.cs.roster){
+    if(x===rec) continue;
+    if(norm(x.name)===n){
+      let nn=`${x.name} (old account)`, i=2;
+      while(db.cs.roster.some(y=>norm(y.name)===norm(nn))) nn=`${x.name} (old account) ${i++}`;
+      x.name=nn;
+    }
+    if(x.aliases) x.aliases=x.aliases.filter(a=>norm(a)!==n);
+  }
+  rec.aliases=(rec.aliases||[]).filter(a=>norm(a)!==n);
+  if(norm(rec.name)!==n && !rec.aliases.some(a=>norm(a)===norm(rec.name))) rec.aliases.push(rec.name);
+  rec.name=name;
+}
 
 /* ---- THP + 3v3 power sync from a vote export's member figures --------
    Same matching precedent as csImportThpCsv: uid first (survives a
@@ -3277,18 +3371,31 @@ function csApplyMemberFigures(players){
     const name=(m.name||'').trim();
     const uid=m.uid?String(m.uid):null;
     if(!name&&!uid) continue;
-    let rec=(uid&&csFindByUid(uid))||(name?csFind(name):null);
+    const byUid=uid?csFindByUid(uid):null;
+    let rec=byUid||(name?csFind(name):null);
+    // a name match on a record tied to a DIFFERENT uid is the account that used to
+    // have this name, not this one — don't write this player's figures onto it
+    if(!byUid&&rec&&uid&&rec.uid&&rec.uid!==uid) rec=null;
     if(!rec){
       if(!name) continue;
       rec={id:csUid(),name,power:0,t1:'Tank',ptype:'Holder',aliases:[],dsRank:null,uid:null,
            arena3v3:null,arena3v3Rank:null,arena3v3Score:null,arena3v3SyncedAt:null};
+      if(uid) csRenameTo(rec,name); // frees the name from whoever held it before
       db.cs.roster.push(rec);
       added++;
     } else updated++;
     if(uid&&!rec.uid) rec.uid=uid;
-    if(name){
-      rec.aliases=rec.aliases||[];
-      if(norm(name)!==norm(rec.name)&&!rec.aliases.some(a=>norm(a)===norm(name))) rec.aliases.push(name);
+    if(name&&norm(name)!==norm(rec.name)){
+      // Matched by uid under a new display name = the account was renamed in-game
+      // (or taken over by another player, e.g. Kiar0 now on the old "Exiled"
+      // account): show the new name everywhere, old name kept as a linked name.
+      // (Until 2026-09-29 this only added the new name as an alias, so the Storm
+      // build kept showing the old name.) A name/alias match just keeps its name.
+      if(byUid) csRenameTo(rec,name);
+      else{
+        rec.aliases=rec.aliases||[];
+        if(!rec.aliases.some(a=>norm(a)===norm(name))) rec.aliases.push(name);
+      }
     }
     if(m.heroPower!=null){ rec.power=Math.round(m.heroPower); rec.powerSyncedAt=now; rec.powerSource='members'; }
     if(m.arena3v3Power!=null){
