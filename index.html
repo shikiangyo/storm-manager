@@ -106,6 +106,7 @@
     <button data-tab="history">History &amp; Attendance</button>
     <button data-tab="rescanyon">Canyon Results</button>
     <button data-tab="resdesert">Desert Results</button>
+    <button data-tab="pstats">Player Stats</button>
     <button data-tab="notes">Notes</button>
     <button data-tab="roster">Roster</button>
     <button data-tab="csplayers">Storm Players</button>
@@ -319,6 +320,14 @@
   <div class="panel"><div class="res-head"><h2>Players</h2><button class="mini" onclick="resPng('desert','players')">⬇ Download PNG</button></div><p class="help" style="margin-top:0">Click any heading to sort by it; click it again to flip the order.</p><div id="resPlayersDesert"></div></div>
   <div class="panel"><div class="res-head"><h2>Matches</h2><div class="row" style="margin:0"><button class="mini admin-only" onclick="resDeleteAll('desert')">Remove all</button><button class="mini" onclick="resPng('desert','matches')">⬇ Download PNG</button></div></div><div id="resMatchesDesert"></div></div>
   <div class="panel"><div class="res-head"><h2>Win % over time</h2><button class="mini" onclick="resChartPng('desert')">⬇ Download PNG</button></div><p class="help" style="margin-top:0">Rolling win rate over the last ~10 matches at each point — shows the swings "last 8 weeks" alone can't.</p><div id="resChartDesert"></div></div>
+</section>
+<section id="tab-pstats" style="display:none">
+  <div class="panel">
+    <h2>Player stats</h2>
+    <p class="help">Pick a player to see their attendance, record and scores next to the alliance average.</p>
+    <div class="row"><select id="psPick" onchange="psSelect(this.value)" style="min-width:220px"></select> <button class="mini" onclick="psDownloadPng()">⬇ Download PNG</button></div>
+  </div>
+  <div id="psBody"></div>
 </section>
 <section id="tab-notes" style="display:none">
   <div class="panel">
@@ -979,6 +988,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.tab==='history') renderEvents();
   if(b.dataset.tab==='rescanyon') renderResults('canyon');
   if(b.dataset.tab==='resdesert') renderResults('desert');
+  if(b.dataset.tab==='pstats') renderPlayerStats();
   if(b.dataset.tab==='settings') document.getElementById('setBanDays').value=db.settings.banDays;
   if(b.dataset.tab==='notes') renderNotes();
   if(b.dataset.tab==='csplayers') renderCsPlayers();
@@ -1844,7 +1854,7 @@ function runAssign(){
   // roster yet; Pete's fine with that overlap rather than trying to guess it.
   const appliedKeys=new Set(apps.map(a=>resolveKey(a.name)||norm(a.name)));
   const notVoted=Object.keys(db.players).filter(k=>!appliedKeys.has(k)).map(k=>db.players[k].name);
-  db.pendingAssignment={mode,date,teamSize,starters,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode]})),notVoted,fair,fairDates:F.dates,dsStrength,canyonSplit,desertSplit:mode==='desert'?desertSplit:null};
+  db.pendingAssignment={mode,date,teamSize,starters,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode],avail:b.avail})),notVoted,fair,fairDates:F.dates,dsStrength,canyonSplit,desertSplit:mode==='desert'?desertSplit:null};
   save(); // shared with every other device — see db.pendingAssignment comment above
   renderAssignment();
 }
@@ -2089,7 +2099,17 @@ document.getElementById('btnSaveEvent').onclick=()=>{
     waitlist:A.waitlist.map(m=>m.name),
     notAvailable:A.notAvailable.map(m=>m.name),
     banned:A.banned.map(b=>b.name),
-    roster:Object.values(db.players).map(p=>p.name)}; // snapshot for "didn't vote"
+    roster:Object.values(db.players).map(p=>p.name), // snapshot for "didn't vote"
+    // What each applicant asked for (noon|evening|both|na) and who was Guaranteed at the
+    // time — neither survives on the team rows, and the Player Stats tab needs both.
+    apps:(()=>{ const seen=new Set(), out=[];
+      const add=(name,avail)=>{ const k=norm(name); if(seen.has(k)) return; seen.add(k); out.push({name,avail:avail||null}); };
+      for(const sl of ['noon','evening']) A.teams[sl].forEach(m=>add(m.name,m.avail));
+      A.waitlist.forEach(m=>add(m.name,m.avail));
+      A.banned.forEach(b=>add(b.name,b.avail));
+      A.notAvailable.forEach(m=>add(m.name,'na'));
+      return out; })(),
+    guaranteed:Object.values(db.players).filter(p=>p.guaranteed).map(p=>p.name)};
   db.events.push(ev); db.events.sort((a,b)=>a.date<b.date?1:-1);
   db.pendingAssignment=null; // clear the shared "3 · Teams" state for every device in the same save
   recomputeDerived(); // selections, fairness dates and applications all derive from the event log; also saves/syncs
@@ -6022,6 +6042,369 @@ window.doImportResults=function(mode){
     say(bits.join(' · '));   // after the render, or it gets wiped
   }catch(e){ say(e.message); toast(e.message,'err'); }
 };
+
+/* ================= player stats tab =================
+   Everything here is derived on the fly from db.events (attendance, picking) and
+   db.results.reports (record, scores) — nothing new is stored except the per-event
+   `apps` (what each applicant asked for) and `guaranteed` snapshot that the New Event
+   save now records. Older events lack those two fields, so anything that needs them
+   only uses events that have them.
+
+   "Applied" = voted to play: picked, waitlisted, or banned at the time. "Not
+   available" is a survey response, not an application, so it never counts. */
+let psSel=null;
+const PS_MODES=['canyon','desert'];
+const psPct=(a,b)=>b?Math.round(a/b*1000)/10:null;
+const psNm=n=>typeof n==='object'&&n?n.name:n;
+
+// One pass per mode: for every event (oldest first), what happened to each player.
+function psBuild(mode){
+  const events=db.events.filter(e=>e.mode===mode).slice()
+    .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:(a.id||0)-(b.id||0));
+  return events.map(ev=>{
+    const rec=new Map();
+    const get=k=>{ let r=rec.get(k); if(!r){ r={onRoster:true,picked:false,played:false,noShow:false,wait:false,banned:false,na:false,avail:null}; rec.set(k,r); } return r; };
+    let recorded=false;
+    for(const s of ['noon','evening']) for(const m of ((ev.teams&&ev.teams[s])||[])){
+      if(m.attended!==null&&m.attended!==undefined) recorded=true;
+      const k=resolveKey(m.name); if(!k) continue;
+      const r=get(k); r.picked=true;
+      if(m.attended===true) r.played=true;
+      if(m.attended===false) r.noShow=true;
+    }
+    for(const n of (ev.waitlist||[])){ const k=resolveKey(psNm(n)); if(k) get(k).wait=true; }
+    for(const n of (ev.banned||[])){ const k=resolveKey(psNm(n)); if(k) get(k).banned=true; }
+    for(const n of (ev.notAvailable||[])){ const k=resolveKey(psNm(n)); if(k) get(k).na=true; }
+    const allRoster=!Array.isArray(ev.roster);
+    for(const n of (ev.roster||[])){ const k=resolveKey(psNm(n)); if(k) get(k); }
+    const hasApps=Array.isArray(ev.apps);
+    for(const a of (ev.apps||[])){ const k=resolveKey(a.name); if(k) get(k).avail=a.avail||null; }
+    const guarKnown=Array.isArray(ev.guaranteed);
+    const guarSet=new Set((ev.guaranteed||[]).map(n=>resolveKey(n)).filter(Boolean));
+    for(const r of rec.values()) if(r.noShow&&r.played) r.noShow=false;
+    return {ev,rec,recorded,allRoster,hasApps,guarKnown,guarSet};
+  });
+}
+const PS_BLANK={onRoster:false,picked:false,played:false,noShow:false,wait:false,banned:false,na:false,avail:null};
+function psWeek(b,k){
+  const r=b.rec.get(k);
+  if(r) return r;
+  return b.allRoster?Object.assign({},PS_BLANK,{onRoster:true}):PS_BLANK;
+}
+function psIsGuar(b,k){
+  return b.guarKnown?b.guarSet.has(k):!!(db.players[k]&&db.players[k].guaranteed);
+}
+function psTally(t,b,k){
+  const r=psWeek(b,k);
+  if(!r.onRoster) return;
+  const applied=r.picked||r.wait||r.banned;
+  const bannedOnly=r.banned&&!r.picked;
+  t.roster++;
+  if(applied) t.applied++;
+  if(r.wait&&!r.picked) t.wait++;
+  if(bannedOnly) t.banned++;
+  if(r.picked) t.picked++;
+  if(r.played) t.played++;
+  if(b.recorded&&applied&&!bannedOnly){ t.elig++; if(r.played) t.playedElig++; }
+  if(b.recorded&&r.picked){ t.pickedRec++; if(r.played) t.attendedRec++; else if(r.noShow) t.noShows++; }
+}
+const psNewTally=()=>({roster:0,applied:0,wait:0,banned:0,picked:0,played:0,elig:0,playedElig:0,pickedRec:0,attendedRec:0,noShows:0});
+function psPlayerTally(built,key){ const t=psNewTally(); for(const b of built) psTally(t,b,key); return t; }
+// Alliance average: every roster player-week where that player wasn't Guaranteed.
+function psAllianceTally(built){
+  const t=psNewTally(), all=Object.keys(db.players);
+  for(const b of built) for(const k of all) if(!psIsGuar(b,k)) psTally(t,b,k);
+  return t;
+}
+// Streaks, counted back from the newest event.
+function psStreaks(built,key){
+  let applyStreak=0, sincePicked=null, i=0;
+  let stillApplying=true;
+  for(let j=built.length-1;j>=0;j--,i++){
+    const r=psWeek(built[j],key);
+    const applied=r.picked||r.wait||r.banned;
+    if(stillApplying){ if(applied) applyStreak++; else stillApplying=false; }
+    if(sincePicked===null&&r.picked) sincePicked=i;
+  }
+  return {applyStreak,sincePicked,events:built.length};
+}
+// DS availability mix — only events that saved what people asked for. Alliance
+// includes Guaranteed players, per the brief.
+function psAvailMix(built,key){
+  const me={noon:0,evening:0,both:0,n:0}, all={noon:0,evening:0,both:0,n:0};
+  let evs=0;
+  for(const b of built){
+    if(!b.hasApps) continue;
+    let any=false;
+    for(const [k,r] of b.rec){
+      if(r.avail!=='noon'&&r.avail!=='evening'&&r.avail!=='both') continue;
+      any=true; all[r.avail]++; all.n++;
+      if(k===key){ me[r.avail]++; me.n++; }
+    }
+    if(any) evs++;
+  }
+  return {me,all,evs};
+}
+
+// Results for one player in one mode.
+function psResults(mode,key){
+  const reps=resReports(mode).slice().sort((a,b)=>resTime(a)-resTime(b));
+  const fields=mode==='canyon'?['total','battle','assistance','strategy']:['score'];
+  const main=mode==='canyon'?'total':'score';
+  const rows=[], withPl=[], withoutPl=[];
+  const allSum={}, allN={}; fields.forEach(f=>{ allSum[f]=0; allN[f]=0; });
+  for(const r of reps){
+    const pl=r.players||[];
+    let mine=null, sum=0;
+    for(const p of pl){
+      if(resKey(p)===key) mine=p;
+      sum+=p[main]||0;
+      fields.forEach(f=>{ allSum[f]+=p[f]||0; allN[f]++; });
+    }
+    if(mine) withPl.push(r); else if(pl.length) withoutPl.push(r);
+    if(mine) rows.push({r,p:mine,matchAvg:pl.length?sum/pl.length:null});
+  }
+  const rec=list=>{ const n=list.length,w=list.filter(x=>x.win).length; return {n,w,l:n-w,pct:psPct(w,n)}; };
+  const mean=(list,f)=>list.length?list.reduce((a,x)=>a+(x.p[f]||0),0)/list.length:null;
+  const cutoff=Date.now()-resFormWeeks()*7*86400000;
+  const avg={}, allAvg={}, best={};
+  fields.forEach(f=>{
+    avg[f]=mean(rows,f);
+    allAvg[f]=allN[f]?allSum[f]/allN[f]:null;
+    best[f]=rows.reduce((a,x)=>Math.max(a,x.p[f]||0),0);
+  });
+  const ranks=rows.map(x=>x.p.rank).filter(Boolean);
+  const st=resultsStats(mode);
+  const idx=st.players.findIndex(p=>p.key===key);
+  return {rows,fields,main,
+    record:rec(withPl), without:rec(withoutPl),
+    form:rec(withPl.filter(r=>resTime(r)>=cutoff)),
+    formRows:rows.filter(x=>resTime(x.r)>=cutoff),
+    split:mode==='canyon'
+      ?{rulebringers:rec(withPl.filter(r=>r.side==='rulebringers')),dawnbreakers:rec(withPl.filter(r=>r.side==='dawnbreakers'))}
+      :{noon:rec(withPl.filter(r=>r.slot==='noon')),evening:rec(withPl.filter(r=>r.slot==='evening'))},
+    avg,allAvg,best,
+    avgRank:ranks.length?ranks.reduce((a,b)=>a+b,0)/ranks.length:null,
+    rankPos:idx>=0?idx+1:null, rankOf:st.players.length};
+}
+
+function psChartSVG(pts){
+  const C={bg:'#12151c',grid:'#262d3c',line:'#f0a832',avg:'#4a9eff',text:'#e6eaf2',muted:'#8b96ab'};
+  const W=920,H=260,PL=56,PR=16,PT=20,PB=32, pw=W-PL-PR, ph=H-PT-PB;
+  const font='ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+  const open=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto" font-family="${font}"><rect width="${W}" height="${H}" fill="${C.bg}"/>`;
+  if(pts.length<2) return open+`<text x="${W/2}" y="${H/2}" text-anchor="middle" font-size="13" fill="${C.muted}">Not enough games yet for a trend line</text></svg>`;
+  const top=Math.max(1,...pts.map(p=>p.val),...pts.map(p=>p.avg||0))*1.08;
+  const n=pts.length, px=i=>PL+pw*i/(n-1), py=v=>PT+ph*(1-v/top);
+  const short=v=>v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?Math.round(v/1e3)+'k':String(Math.round(v));
+  const M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const tick=d=>{ const x=new Date(d+'T00:00:00Z'); return M[x.getUTCMonth()]+' '+x.getUTCFullYear(); };
+  const line=(f)=>pts.map((p,i)=>(i?'L':'M')+px(i).toFixed(1)+','+py(f(p)).toFixed(1)).join(' ');
+  const avgPts=pts.filter(p=>p.avg!=null);
+  const tn=Math.min(8,n), ticks=[...Array(tn)].map((_,i)=>Math.round(i*(n-1)/Math.max(1,tn-1)));
+  return open+
+    [0,.25,.5,.75,1].map(g=>`<line x1="${PL}" y1="${py(top*g).toFixed(1)}" x2="${W-PR}" y2="${py(top*g).toFixed(1)}" stroke="${C.grid}"/><text x="${PL-8}" y="${py(top*g).toFixed(1)}" text-anchor="end" dominant-baseline="middle" font-size="11" fill="${C.muted}">${short(top*g)}</text>`).join('')+
+    ticks.map((i,x)=>`<text x="${px(i).toFixed(1)}" y="${H-10}" text-anchor="${x===0?'start':x===ticks.length-1?'end':'middle'}" font-size="10" fill="${C.muted}">${esc(tick(pts[i].date))}</text>`).join('')+
+    (avgPts.length>1?`<path d="${pts.map((p,i)=>p.avg==null?'':((i&&pts[i-1].avg!=null?'L':'M')+px(i).toFixed(1)+','+py(p.avg).toFixed(1))).join(' ')}" fill="none" stroke="${C.avg}" stroke-width="1.6" stroke-dasharray="5,4"/>`:'')+
+    `<path d="${line(p=>p.val)}" fill="none" stroke="${C.line}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`+
+    pts.map((p,i)=>`<circle cx="${px(i).toFixed(1)}" cy="${py(p.val).toFixed(1)}" r="3" fill="${C.line}"><title>${esc(p.date)}: ${nfmt(p.val)}</title></circle>`).join('')+
+    `</svg>`;
+}
+
+/* ---- download the player's stats page as one PNG --------------------------
+   Reads the already-rendered #psBody (headings, tables, stat tiles, charts) and
+   lays it out as a single SVG, so the image can never drift from what's on
+   screen. Goes through csDownloadPNG like the other exports. */
+window.psDownloadPng=function(){
+  if(!psSel||!db.players[psSel]){ toast('Choose a player first','err'); return; }
+  const body=document.getElementById('psBody'); if(!body) return;
+  const p=db.players[psSel];
+  const FONT='ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+  const C={bg:'#12151c',panel:'#1b202b',head:'#232a38',line:'#323b4d',text:'#e6eaf2',muted:'#8b96ab',accent:'#f0a832',blue:'#4a9eff',win:'#3ecf8e',loss:'#f05b5b'};
+  const PAD=18, CW=920, W=CW+PAD*2, IN=PAD, IW=CW-PAD*2, MAXROWS=15;
+  const T=(x,y,s,o)=>{ o=o||{}; return `<text x="${x}" y="${y}" font-size="${o.size||12}" font-weight="${o.w||400}" fill="${o.fill||C.text}"${o.anchor?` text-anchor="${o.anchor}"`:''}>${esc(s)}</text>`; };
+  const txt=el=>(el.textContent||'').replace(/\s+/g,' ').trim();
+  const fit=(s,px,size)=>{ const max=Math.max(1,Math.floor(px/(size*0.56))); return s.length>max?s.slice(0,max-1)+'…':s; };
+  const wrap=(s,px,size)=>{ const max=Math.max(10,Math.floor(px/(size*0.54))), lines=[]; let cur='';
+    for(const w of s.split(' ')){ if(cur&&(cur+' '+w).length>max){ lines.push(cur); cur=w; } else cur=cur?cur+' '+w:w; }
+    if(cur) lines.push(cur); return lines; };
+  const colour=s=>/^(WIN|W)$/.test(s)?C.win:/^(LOSS|L)$/.test(s)?C.loss:C.text;
+
+  let y=PAD, out='';
+  out+=T(PAD,y+22,p.name,{size:24,w:700,fill:C.accent});
+  out+=T(W-PAD,y+22,'Storm Manager · Player stats · '+new Date().toISOString().slice(0,10),{size:11,fill:C.muted,anchor:'end'});
+  y+=40;
+
+  for(const panel of body.children){
+    if(!panel.classList.contains('panel')||panel.id==='psDsExtra') continue;
+    const y0=y; let buf=''; y+=PAD;
+    for(const el of panel.children){
+      const tag=el.tagName;
+      if(tag==='H2'){ buf+=T(IN+PAD,y+14,txt(el),{size:16,w:700}); y+=28; }
+      else if(tag==='H3'){ y+=6; buf+=T(IN+PAD,y+12,txt(el),{size:13,w:700,fill:C.blue}); y+=20; }
+      else if(tag==='P'){ const ls=[].concat(...el.innerHTML.split(/<br\s*\/?>/i).map(h=>{ const d=document.createElement('div'); d.innerHTML=h; return wrap(txt(d),IW,11); })); ls.forEach((l,i)=>{ buf+=T(IN+PAD,y+11+i*15,l,{size:11,fill:C.muted}); }); y+=ls.length*15+4; }
+      else if(tag==='TABLE'){
+        const hs=[...el.querySelectorAll('thead th')].map(txt);
+        let rows=[...el.querySelectorAll('tbody tr')].map(tr=>[...tr.children].map(txt));
+        const n=hs.length||(rows[0]||[]).length||1, more=Math.max(0,rows.length-MAXROWS);
+        rows=rows.slice(0,MAXROWS);
+        const first=n===1?IW:Math.round(IW*(n>=5?0.28:0.34)), rest=n>1?(IW-first)/(n-1):0;
+        const xs=[...Array(n)].map((_,i)=>IN+PAD+(i===0?0:first+rest*(i-1)));
+        const wd=i=>i===0?first:rest;
+        if(hs.length){
+          buf+=`<rect x="${IN+PAD-6}" y="${y}" width="${IW+12}" height="26" rx="4" fill="${C.head}"/>`;
+          hs.forEach((h,i)=>{ buf+=T(xs[i],y+17,fit(h,wd(i)-8,11),{size:11,w:700,fill:C.muted}); });
+          y+=28;
+        }
+        for(const r of rows){
+          r.forEach((c,i)=>{ if(i<n) buf+=T(xs[i],y+16,fit(c,wd(i)-8,12),{size:12,w:i===0?400:600,fill:i===0?C.text:colour(c)}); });
+          buf+=`<line x1="${IN+PAD-6}" y1="${y+24}" x2="${IN+PAD+IW+6}" y2="${y+24}" stroke="${C.line}" stroke-width="0.6"/>`;
+          y+=25;
+        }
+        if(more){ buf+=T(xs[0],y+14,'… and '+more+' earlier row'+(more===1?'':'s'),{size:11,fill:C.muted}); y+=20; }
+        y+=6;
+      }
+      else if(el.classList.contains('flexh')){
+        const tiles=[...el.querySelectorAll('.stat')], k=tiles.length||1, gap=10, tw=(IW-gap*(k-1))/k;
+        tiles.forEach((t,i)=>{ const x=IN+PAD+i*(tw+gap);
+          buf+=`<rect x="${x}" y="${y}" width="${tw}" height="54" rx="8" fill="${C.head}"/>`+
+               T(x+tw/2,y+26,txt(t.querySelector('.n')),{size:20,w:700,fill:C.accent,anchor:'middle'})+
+               T(x+tw/2,y+43,txt(t.querySelector('.l')),{size:10,fill:C.muted,anchor:'middle'}); });
+        y+=64;
+      }
+      else if(tag==='DIV'&&el.querySelector('.badge')){
+        let x=IN+PAD;
+        for(const b of el.querySelectorAll('.badge')){
+          const w=txt(b)==='W'; if(x+24>IN+PAD+IW){ x=IN+PAD; y+=24; }
+          buf+=`<rect x="${x}" y="${y}" width="22" height="18" rx="9" fill="${w?'#16352a':'#3a1616'}"/>`+T(x+11,y+13,txt(b),{size:11,w:700,fill:w?C.win:C.loss,anchor:'middle'});
+          x+=26;
+        }
+        y+=28;
+      }
+      else if(tag==='svg'||tag==='svg'.toUpperCase()||el.namespaceURI==='http://www.w3.org/2000/svg'){
+        const sc=IW/920, h=260*sc;
+        buf+=`<g transform="translate(${IN+PAD},${y}) scale(${sc})" font-family="${FONT}">${el.innerHTML}</g>`; y+=h+10;
+      }
+    }
+    y+=PAD-6;
+    out+=`<rect x="${IN}" y="${y0}" width="${CW}" height="${y-y0}" rx="12" fill="${C.panel}" stroke="${C.line}"/>`+buf;
+    y+=14;
+  }
+  const H=y+PAD-14;
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONT}"><rect width="${W}" height="${H}" fill="${C.bg}"/>${out}</svg>`;
+  csDownloadPNG(svg,'player-stats-'+p.name.replace(/[^\w-]+/g,'_')+'-'+new Date().toISOString().slice(0,10)+'.png',2).catch(e=>toast(e.message,'err'));
+};
+
+window.psSelect=v=>{ psSel=v||null; renderPlayerStats(); };
+
+function renderPlayerStats(){
+  const pick=document.getElementById('psPick'), body=document.getElementById('psBody');
+  if(!pick||!body) return;
+  const keys=Object.keys(db.players).sort((a,b)=>db.players[a].name.localeCompare(db.players[b].name,undefined,{sensitivity:'base'}));
+  if(psSel&&!db.players[psSel]) psSel=null;
+  pick.innerHTML='<option value="">— choose a player —</option>'+
+    keys.map(k=>`<option value="${esc(k)}"${k===psSel?' selected':''}>${esc(db.players[k].name)}</option>`).join('');
+  if(!psSel){ body.innerHTML='<div class="panel"><p class="muted">Choose a player above.</p></div>'; return; }
+  const key=psSel, p=db.players[key];
+  const today=new Date().toISOString().slice(0,10);
+  const built={canyon:psBuild('canyon'),desert:psBuild('desert')};
+  const mine={}, avgT={}, streak={}, res={};
+  for(const m of PS_MODES){ mine[m]=psPlayerTally(built[m],key); avgT[m]=psAllianceTally(built[m]); streak[m]=psStreaks(built[m],key); res[m]=psResults(m,key); }
+  const cs=(db.cs.roster||[]).find(r=>(r.uid&&p.uid&&r.uid===p.uid)||resolveKey(r.name||'')===key);
+
+  // ---- header ----
+  const stat=(n,l)=>`<div class="stat"><div class="n">${n}</div><div class="l">${esc(l)}</div></div>`;
+  const banTxt=m=>isBanned(p,m,today)?'Banned until '+p.banUntil[m]:'Not banned';
+  const head=`<div class="panel"><h2>${esc(p.name)} ${p.guaranteed?'<span class="badge b-guar">G</span>':''}</h2>
+    <div class="flexh">
+      ${stat(nfmt(res.canyon.record.n),'Canyon games')}${stat(nfmt(res.desert.record.n),'Desert games')}
+      ${stat(p.noShows||0,'No-shows (all time)')}
+      ${cs&&cs.dsRank?stat(esc(cs.dsRank),'Desert grade'):''}${cs&&cs.power?stat(nfmt(cs.power),'Power'):''}
+    </div>
+    <p class="help">Canyon: ${esc(banTxt('canyon'))} · last picked ${esc(fmtDate(p.lastSelected.canyon))} · last applied ${esc(fmtDate(p.lastApplied.canyon))}<br>
+    Desert: ${esc(banTxt('desert'))} · last picked ${esc(fmtDate(p.lastSelected.desert))} · last applied ${esc(fmtDate(p.lastApplied.desert))}</p></div>`;
+
+  // ---- attendance & picking ----
+  // cell: player's figure with a small +/- against the average (good: 1 higher is better, 0 neutral)
+  const cell=(n,d,avgPctV,good)=>{
+    const v=psPct(n,d);
+    if(v===null) return '<td class="muted">—</td><td class="muted">'+(avgPctV==null?'—':avgPctV+'%')+'</td>';
+    let diff='';
+    if(avgPctV!=null){
+      const dd=Math.round((v-avgPctV)*10)/10;
+      const col=!good||dd===0?'var(--muted)':(dd>0?'var(--green)':'var(--red)');
+      diff=` <span style="color:${col};font-size:11px">${dd>0?'+':''}${dd}</span>`;
+    }
+    return `<td><b>${v}%</b> <span class="muted">(${n}/${d})</span>${diff}</td><td>${avgPctV==null?'—':avgPctV+'%'}</td>`;
+  };
+  const cnt=(v)=>`<td><b>${v}</b></td><td class="muted">—</td>`;
+  const row=(label,fn)=>`<tr><td>${label}</td>${fn('canyon')}${fn('desert')}</tr>`;
+  const att=`<div class="panel"><h2>Attendance &amp; picking</h2>
+    <p class="help" style="margin-top:0">Applied means voted to play (picked, waitlisted, or banned that week). Voting "not available" isn't counted. The average is the alliance average.</p>
+    <table class="grid"><thead><tr><th></th><th>Canyon</th><th>Canyon avg</th><th>Desert</th><th>Desert avg</th></tr></thead><tbody>
+    ${row('Games played (from results)',m=>cnt(res[m].record.n))}
+    ${row('Weeks played (attendance log)',m=>cnt(mine[m].played))}
+    ${row('Weeks applied',m=>cell(mine[m].applied,mine[m].roster,psPct(avgT[m].applied,avgT[m].roster),1))}
+    ${row('Weeks played, of those applied',m=>cell(mine[m].playedElig,mine[m].elig,psPct(avgT[m].playedElig,avgT[m].elig),1))}
+    ${row('Applied but not picked',m=>cell(mine[m].wait,mine[m].applied,psPct(avgT[m].wait,avgT[m].applied),0))}
+    ${row('Turned up when picked',m=>cell(mine[m].attendedRec,mine[m].pickedRec,psPct(avgT[m].attendedRec,avgT[m].pickedRec),1))}
+    ${row('No-shows',m=>cnt(mine[m].noShows))}
+    ${row('Applying streak (weeks)',m=>cnt(streak[m].applyStreak))}
+    ${row('Events since last picked',m=>cnt(streak[m].sincePicked===null?'never':streak[m].sincePicked))}
+    </tbody></table>`;
+
+  // DS availability mix
+  const mix=psAvailMix(built.desert,key);
+  const mixRow=(label,k)=>{
+    const a=psPct(mix.me[k],mix.me.n), b=psPct(mix.all[k],mix.all.n);
+    return `<tr><td>${label}</td><td>${a===null?'<span class="muted">—</span>':`<b>${a}%</b> <span class="muted">(${mix.me[k]}/${mix.me.n})</span>`}</td><td>${b===null?'—':b+'%'}</td></tr>`;
+  };
+  const mixHtml=`<h3>Desert: what they ask for</h3>
+    ${mix.all.n?`<table class="grid"><thead><tr><th>Applied for</th><th>${esc(p.name)}</th><th>Alliance</th></tr></thead><tbody>${mixRow('☀️ Noon','noon')}${mixRow('🌙 Evening','evening')}${mixRow('Both','both')}</tbody></table>
+      <p class="help">Based on ${mix.evs} event${mix.evs===1?'':'s'} with saved availability. The alliance figure includes everyone.</p>`
+      :'<p class="muted">Availability is saved from the next Desert event onwards, so there is nothing to show yet.</p>'}`;
+
+  // ---- winning ----
+  const recTxt=r=>r.n?`<b>${r.w}W – ${r.l}L</b> <span class="muted">${r.pct}%</span>`:'<span class="muted">—</span>';
+  const winSec=m=>{
+    const r=res[m], sp=r.split;
+    if(!r.record.n) return `<h3>${MODES[m]}</h3><p class="muted">No ${esc(MODES[m])} games in the results yet.</p>`;
+    const lines=[['Overall',r.record],['Last '+resFormWeeks()+' weeks',r.form]];
+    if(m==='canyon') lines.push(['As Rulebringers',sp.rulebringers],['As Dawnbreakers',sp.dawnbreakers]);
+    else lines.push(['Noon session',sp.noon],['Evening session',sp.evening]);
+    lines.push(['Team record when not playing',r.without]);
+    const strip=r.rows.slice(-30).map(x=>`<span class="badge ${x.r.win?'b-start':'b-ban'}" title="${esc(x.r.date)}">${x.r.win?'W':'L'}</span>`).join(' ');
+    return `<h3>${MODES[m]}</h3>
+      <table class="grid"><tbody>${lines.map(([l,v])=>v&&v.n?`<tr><td>${esc(l)}</td><td>${recTxt(v)}${/^Team record/.test(l)?` <span class="muted">(${v.n} game${v.n===1?'':'s'})</span>`:''}</td></tr>`:'').join('')}</tbody></table>
+      <p class="help" style="margin:8px 0 4px">Recent games (oldest → newest):</p><div>${strip}</div>
+      <table class="grid" style="margin-top:10px"><thead><tr><th>Date</th><th>${m==='canyon'?'Side':'Session'}</th><th>Result</th><th>Score</th><th>Their score</th><th>Rank</th></tr></thead><tbody>
+      ${r.rows.slice().reverse().map(x=>`<tr><td>${esc(x.r.date)}</td><td>${esc(m==='canyon'?(x.r.side||'—'):(x.r.slot||'—'))}</td><td><span class="badge ${x.r.win?'b-start':'b-ban'}">${x.r.win?'WIN':'LOSS'}</span></td><td>${nfmt(x.r.ourScore)}</td><td>${nfmt(x.r.theirScore)}</td><td>${x.p.rank||'—'}</td></tr>`).join('')}
+      </tbody></table>`;
+  };
+  const win=`<div class="panel"><h2>Winning</h2>${winSec('canyon')}${winSec('desert')}
+    <p class="help">"Team record when not playing" only counts games that have a player list. It's a small-sample comparison, so read it with the game counts.</p></div>`;
+
+  // ---- scores ----
+  const LBL={total:'Total',battle:'Battle',assistance:'Assist',strategy:'Strategy',score:'Score'};
+  const scoreSec=m=>{
+    const r=res[m];
+    if(!r.rows.length) return `<h3>${MODES[m]}</h3><p class="muted">No scores yet.</p>`;
+    const dv=(a,b)=>{ if(a==null||b==null||!b) return ''; const d=Math.round((a/b-1)*100); return ` <span style="color:${d>=0?'var(--green)':'var(--red)'};font-size:11px">${d>0?'+':''}${d}%</span>`; };
+    const tbl=`<table class="grid"><thead><tr><th></th><th>Average</th><th>Alliance avg</th><th>Best</th></tr></thead><tbody>
+      ${r.fields.map(f=>`<tr><td>${LBL[f]}</td><td><b>${nfmt(Math.round(r.avg[f]))}</b>${dv(r.avg[f],r.allAvg[f])}</td><td>${nfmt(Math.round(r.allAvg[f]||0))}</td><td>${nfmt(r.best[f])}</td></tr>`).join('')}
+      </tbody></table>`;
+    const meta=`<p class="help">${r.rankPos?`Ranked ${r.rankPos} of ${r.rankOf} by average ${m==='canyon'?'total':'score'} · `:''}${r.avgRank!=null?`average in-game rank ${Math.round(r.avgRank*10)/10} · `:''}last ${resFormWeeks()} weeks: ${r.formRows.length?nfmt(Math.round(r.formRows.reduce((a,x)=>a+(x.p[r.main]||0),0)/r.formRows.length))+' avg over '+r.formRows.length+' game'+(r.formRows.length===1?'':'s'):'no games'}</p>`;
+    const pts=r.rows.map(x=>({date:x.r.date,val:x.p[r.main]||0,avg:x.matchAvg}));
+    return `<h3>${MODES[m]}</h3>${tbl}${meta}
+      <p class="help" style="margin:8px 0 4px"><span style="color:var(--accent)">━</span> ${esc(p.name)} &nbsp; <span style="color:var(--accent2)">╌</span> average of everyone in that game</p>
+      ${psChartSVG(pts)}`;
+  };
+  const scores=`<div class="panel"><h2>Scores</h2>${scoreSec('canyon')}${scoreSec('desert')}</div>`;
+  // Reserved for the extra Desert Storm data (to be added).
+  const extra=`<div class="panel" id="psDsExtra"><h2>Desert Storm — extra data</h2><p class="muted">Space reserved for the additional Desert Storm data.</p></div>`;
+
+  body.innerHTML=head+att+mixHtml+'</div>'+win+scores+extra;
+}
 
 
 renderCsPlayers(); renderCsBuildTab(); renderCsSetup();
