@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-30 17:45 UTC · New Event: next 3 to drop per team</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-30 18:05 UTC · New Event: subs ordered by closeness to starter</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -1838,12 +1838,14 @@ function runAssign(){
   // the two teams can be visually compared top-to-bottom — e.g. the strongest
   // starter on Noon lines up against the strongest starter on Evening (Pete's
   // ask, 2026-09-21). Who's a starter vs a sub is already fixed above by
-  // guaranteed/fairness — this only reorders within each of those two groups,
+  // guaranteed/fairness — this only reorders the starters group (subs keep their closeness-to-starter order),
   // never moves anyone across the starter/sub line.
   for(const s of ['noon','evening']){
     const byPower=(a,b)=>dsStrengthOf(b.name).power-dsStrengthOf(a.name).power;
     const startersGroup=teams[s].slice(0,starters).sort(byPower);
-    const subsGroup=teams[s].slice(starters).sort(byPower);
+    // Subs are NOT power-sorted: they stay in starter-rank order (guaranteed, then
+    // longest since last start), so #21 is the sub closest to being a starter.
+    const subsGroup=teams[s].slice(starters);
     teams[s]=[...startersGroup,...subsGroup];
   }
   const fair={};
