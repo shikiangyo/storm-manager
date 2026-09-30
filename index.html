@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-29 12:00 UTC · uid renames (Kiar0 takeover)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-30 12:39 UTC · player stats tab</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -6075,7 +6075,7 @@ function psBuild(mode){
     for(const n of (ev.waitlist||[])){ const k=resolveKey(psNm(n)); if(k) get(k).wait=true; }
     for(const n of (ev.banned||[])){ const k=resolveKey(psNm(n)); if(k) get(k).banned=true; }
     for(const n of (ev.notAvailable||[])){ const k=resolveKey(psNm(n)); if(k) get(k).na=true; }
-    const allRoster=!Array.isArray(ev.roster);
+    const allRoster=!Array.isArray(ev.roster)||!ev.roster.length;
     for(const n of (ev.roster||[])){ const k=resolveKey(psNm(n)); if(k) get(k); }
     const hasApps=Array.isArray(ev.apps);
     for(const a of (ev.apps||[])){ const k=resolveKey(a.name); if(k) get(k).avail=a.avail||null; }
@@ -6311,6 +6311,13 @@ function renderPlayerStats(){
   const mine={}, avgT={}, streak={}, res={};
   for(const m of PS_MODES){ mine[m]=psPlayerTally(built[m],key); avgT[m]=psAllianceTally(built[m]); streak[m]=psStreaks(built[m],key); res[m]=psResults(m,key); }
   const cs=(db.cs.roster||[]).find(r=>(r.uid&&p.uid&&r.uid===p.uid)||resolveKey(r.name||'')===key);
+  // How far back each source goes, so a shorter results history isn't mistaken for missing attendance.
+  const cover={};
+  for(const m of PS_MODES){
+    const evs=built[m], reps=resReports(m).filter(r=>(r.players||[]).length).sort((a,b)=>resTime(a)-resTime(b));
+    cover[m]=`${MODES[m]}: attendance log ${evs.length} event${evs.length===1?'':'s'}${evs.length?' (from '+evs[0].ev.date+')':''}; results ${reps.length} game${reps.length===1?'':'s'}${reps.length?' (from '+reps[0].date+')':''}`;
+  }
+  const coverHtml=`<p class="help">History available — ${esc(cover.canyon)} · ${esc(cover.desert)}. Attendance and picking use the attendance log; games, record and scores use the imported results, which may go back a shorter way.</p>`;
 
   // ---- header ----
   const stat=(n,l)=>`<div class="stat"><div class="n">${n}</div><div class="l">${esc(l)}</div></div>`;
@@ -6340,6 +6347,7 @@ function renderPlayerStats(){
   const cnt=(v)=>`<td><b>${v}</b></td><td class="muted">—</td>`;
   const row=(label,fn)=>`<tr><td>${label}</td>${fn('canyon')}${fn('desert')}</tr>`;
   const att=`<div class="panel"><h2>Attendance &amp; picking</h2>
+    ${coverHtml}
     <p class="help" style="margin-top:0">Applied means voted to play (picked, waitlisted, or banned that week). Voting "not available" isn't counted. The average is the alliance average.</p>
     <table class="grid"><thead><tr><th></th><th>Canyon</th><th>Canyon avg</th><th>Desert</th><th>Desert avg</th></tr></thead><tbody>
     ${row('Games played (from results)',m=>cnt(res[m].record.n))}
