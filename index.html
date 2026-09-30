@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-30 12:46 UTC · player stats: full-history record</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-30 17:45 UTC · New Event: next 3 to drop per team</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -1854,7 +1854,7 @@ function runAssign(){
   // roster yet; Pete's fine with that overlap rather than trying to guess it.
   const appliedKeys=new Set(apps.map(a=>resolveKey(a.name)||norm(a.name)));
   const notVoted=Object.keys(db.players).filter(k=>!appliedKeys.has(k)).map(k=>db.players[k].name);
-  db.pendingAssignment={mode,date,teamSize,starters,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode],avail:b.avail})),notVoted,fair,fairDates:F.dates,dsStrength,canyonSplit,desertSplit:mode==='desert'?desertSplit:null};
+  db.pendingAssignment={mode,date,teamSize,starters,teams,waitlist,notAvailable:notAvail,banned:banned.map(b=>({name:b.p.name,until:b.p.banUntil[mode],avail:b.avail})),notVoted,fair,fairDates:F.dates,dropOrder:order.map(x=>x.p.name),dsStrength,canyonSplit,desertSplit:mode==='desert'?desertSplit:null};
   save(); // shared with every other device — see db.pendingAssignment comment above
   renderAssignment();
 }
@@ -1949,8 +1949,19 @@ function renderAssignment(){
       :'Came out behind after the &quot;both&quot; voters were dealt alternately by DS Ranking grade/power';
     const strongTag=A.dsStrength&&A.dsStrength.strongSide===slot?` <span class="badge b-start" title="${strongTip}">${baseOnly?'STRONGER BASE':'STRONGER SIDE'}</span>`:(A.dsStrength&&A.dsStrength.weakSide===slot?` <span class="badge b-wait" title="${weakTip}">${baseOnly?'weaker base':'weaker side'}</span>`:'');
     const priorityTag=A.canyonSplit==='priority'?(slot==='noon'?' <span class="badge b-start">PRIORITY TEAM</span>':' <span class="badge b-wait">everyone else</span>'):'';
+    // The "next to drop" list: the last-picked non-guaranteed members of this team in
+    // fairness order (the marginal picks), i.e. who'd be first off for a manual swap.
+    // Computed live from the current team, so manual drops/promotes are reflected.
+    let dropHtml='';
+    if(A.dropOrder){
+      const idx=n=>{ const k=A.dropOrder.indexOf(n); return k<0?-1:k; };
+      const nxt=list.filter(m=>!m.guaranteed).sort((a,b)=>idx(b.name)-idx(a.name)).slice(0,3);
+      dropHtml=`<div style="margin-top:8px;padding:8px 10px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;font-size:12px">
+        <b>Next 3 to drop</b> <span class="muted">(last picked by fairness order — first off if you swap someone in)</span>
+        ${nxt.length?`<ol style="margin:4px 0 0 18px;padding:0">${nxt.map(m=>`<li>${esc(m.name)} ${availBadge(m.avail)}</li>`).join('')}</ol>`:'<div class="muted">none</div>'}</div>`;
+    }
     return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}${strongTag}${priorityTag}</h3>
-      <table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
+      <table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table>${dropHtml}</div>`;
   };
   // last 5 saved events for this mode, oldest -> newest, shown as grid-style history columns
   const recentEvs=db.events.filter(e=>e.mode===A.mode).sort((a,b)=>a.date<b.date?-1:1).slice(-5);
