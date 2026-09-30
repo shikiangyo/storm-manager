@@ -97,7 +97,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-30 12:39 UTC · player stats tab</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-30 12:46 UTC · player stats: full-history record</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -6069,7 +6069,7 @@ function psBuild(mode){
       if(m.attended!==null&&m.attended!==undefined) recorded=true;
       const k=resolveKey(m.name); if(!k) continue;
       const r=get(k); r.picked=true;
-      if(m.attended===true) r.played=true;
+      if(m.attended===true){ r.played=true; (r.slots=r.slots||[]).push(s); }
       if(m.attended===false) r.noShow=true;
     }
     for(const n of (ev.waitlist||[])){ const k=resolveKey(psNm(n)); if(k) get(k).wait=true; }
@@ -6147,7 +6147,7 @@ function psAvailMix(built,key){
 }
 
 // Results for one player in one mode.
-function psResults(mode,key){
+function psResults(mode,key,built){
   const reps=resReports(mode).slice().sort((a,b)=>resTime(a)-resTime(b));
   const fields=mode==='canyon'?['total','battle','assistance','strategy']:['score'];
   const main=mode==='canyon'?'total':'score';
@@ -6173,16 +6173,32 @@ function psResults(mode,key){
     allAvg[f]=allN[f]?allSum[f]/allN[f]:null;
     best[f]=rows.reduce((a,x)=>Math.max(a,x.p[f]||0),0);
   });
+  // Older results have team scores but no player list. Where the attendance log says the
+  // player played that date (and session, for Desert), borrow that result's win/loss.
+  // Ambiguous dates (Canyon has two matches a day) only count when both agree.
+  const have=new Set(withPl.map(r=>r.id));
+  const inferred=[], seen=new Set();
+  for(const b of (built||[])){
+    const pr=b.rec.get(key); if(!pr||!pr.slots||!pr.slots.length) continue;
+    const same=reps.filter(x=>x.date===b.ev.date);
+    if(same.some(x=>have.has(x.id))) continue; // exact data exists for that date
+    const cand=[];
+    if(mode==='desert'){ for(const sl of pr.slots){ const c=same.filter(x=>x.slot===sl); if(c.length===1) cand.push(c[0]); } }
+    else if(same.length&&same.every(x=>x.win===same[0].win)) cand.push(same[0]);
+    for(const x of cand) if(!(x.players||[]).length&&!seen.has(x.id)){ seen.add(x.id); inferred.push({r:x,p:null,inferred:true}); }
+  }
+  const games=[...rows,...inferred].sort((a,b)=>resTime(a.r)-resTime(b.r));
+  const gl=games.map(g=>g.r);
   const ranks=rows.map(x=>x.p.rank).filter(Boolean);
   const st=resultsStats(mode);
   const idx=st.players.findIndex(p=>p.key===key);
-  return {rows,fields,main,
-    record:rec(withPl), without:rec(withoutPl),
-    form:rec(withPl.filter(r=>resTime(r)>=cutoff)),
+  return {rows,games,fields,main,
+    record:rec(gl), without:rec(withoutPl),
+    form:rec(gl.filter(r=>resTime(r)>=cutoff)),
     formRows:rows.filter(x=>resTime(x.r)>=cutoff),
     split:mode==='canyon'
-      ?{rulebringers:rec(withPl.filter(r=>r.side==='rulebringers')),dawnbreakers:rec(withPl.filter(r=>r.side==='dawnbreakers'))}
-      :{noon:rec(withPl.filter(r=>r.slot==='noon')),evening:rec(withPl.filter(r=>r.slot==='evening'))},
+      ?{rulebringers:rec(gl.filter(r=>r.side==='rulebringers')),dawnbreakers:rec(gl.filter(r=>r.side==='dawnbreakers'))}
+      :{noon:rec(gl.filter(r=>r.slot==='noon')),evening:rec(gl.filter(r=>r.slot==='evening'))},
     avg,allAvg,best,
     avgRank:ranks.length?ranks.reduce((a,b)=>a+b,0)/ranks.length:null,
     rankPos:idx>=0?idx+1:null, rankOf:st.players.length};
@@ -6309,7 +6325,7 @@ function renderPlayerStats(){
   const today=new Date().toISOString().slice(0,10);
   const built={canyon:psBuild('canyon'),desert:psBuild('desert')};
   const mine={}, avgT={}, streak={}, res={};
-  for(const m of PS_MODES){ mine[m]=psPlayerTally(built[m],key); avgT[m]=psAllianceTally(built[m]); streak[m]=psStreaks(built[m],key); res[m]=psResults(m,key); }
+  for(const m of PS_MODES){ mine[m]=psPlayerTally(built[m],key); avgT[m]=psAllianceTally(built[m]); streak[m]=psStreaks(built[m],key); res[m]=psResults(m,key,built[m]); }
   const cs=(db.cs.roster||[]).find(r=>(r.uid&&p.uid&&r.uid===p.uid)||resolveKey(r.name||'')===key);
   // How far back each source goes, so a shorter results history isn't mistaken for missing attendance.
   const cover={};
@@ -6317,7 +6333,7 @@ function renderPlayerStats(){
     const evs=built[m], reps=resReports(m).filter(r=>(r.players||[]).length).sort((a,b)=>resTime(a)-resTime(b));
     cover[m]=`${MODES[m]}: attendance log ${evs.length} event${evs.length===1?'':'s'}${evs.length?' (from '+evs[0].ev.date+')':''}; results ${reps.length} game${reps.length===1?'':'s'}${reps.length?' (from '+reps[0].date+')':''}`;
   }
-  const coverHtml=`<p class="help">History available — ${esc(cover.canyon)} · ${esc(cover.desert)}. Attendance and picking use the attendance log; games, record and scores use the imported results, which may go back a shorter way.</p>`;
+  const coverHtml=`<p class="help">History available — ${esc(cover.canyon)} · ${esc(cover.desert)}. Attendance and picking use the attendance log. Record uses every result it can match to the log; scores need a player list, so they only cover the results that came with one.</p>`;
 
   // ---- header ----
   const stat=(n,l)=>`<div class="stat"><div class="n">${n}</div><div class="l">${esc(l)}</div></div>`;
@@ -6350,7 +6366,7 @@ function renderPlayerStats(){
     ${coverHtml}
     <p class="help" style="margin-top:0">Applied means voted to play (picked, waitlisted, or banned that week). Voting "not available" isn't counted. The average is the alliance average.</p>
     <table class="grid"><thead><tr><th></th><th>Canyon</th><th>Canyon avg</th><th>Desert</th><th>Desert avg</th></tr></thead><tbody>
-    ${row('Games played (from results)',m=>cnt(res[m].record.n))}
+    ${row('Games played (results matched)',m=>cnt(res[m].record.n))}
     ${row('Weeks played (attendance log)',m=>cnt(mine[m].played))}
     ${row('Weeks applied',m=>cell(mine[m].applied,mine[m].roster,psPct(avgT[m].applied,avgT[m].roster),1))}
     ${row('Weeks played, of those applied',m=>cell(mine[m].playedElig,mine[m].elig,psPct(avgT[m].playedElig,avgT[m].elig),1))}
@@ -6376,21 +6392,21 @@ function renderPlayerStats(){
   const recTxt=r=>r.n?`<b>${r.w}W – ${r.l}L</b> <span class="muted">${r.pct}%</span>`:'<span class="muted">—</span>';
   const winSec=m=>{
     const r=res[m], sp=r.split;
-    if(!r.record.n) return `<h3>${MODES[m]}</h3><p class="muted">No ${esc(MODES[m])} games in the results yet.</p>`;
+    if(!r.record.n) return `<h3>${MODES[m]}</h3><p class="muted">No ${esc(MODES[m])} games matched to this player yet.</p>`;
     const lines=[['Overall',r.record],['Last '+resFormWeeks()+' weeks',r.form]];
     if(m==='canyon') lines.push(['As Rulebringers',sp.rulebringers],['As Dawnbreakers',sp.dawnbreakers]);
     else lines.push(['Noon session',sp.noon],['Evening session',sp.evening]);
     lines.push(['Team record when not playing',r.without]);
-    const strip=r.rows.slice(-30).map(x=>`<span class="badge ${x.r.win?'b-start':'b-ban'}" title="${esc(x.r.date)}">${x.r.win?'W':'L'}</span>`).join(' ');
+    const strip=r.games.slice(-30).map(x=>`<span class="badge ${x.r.win?'b-start':'b-ban'}" title="${esc(x.r.date)}">${x.r.win?'W':'L'}</span>`).join(' ');
     return `<h3>${MODES[m]}</h3>
       <table class="grid"><tbody>${lines.map(([l,v])=>v&&v.n?`<tr><td>${esc(l)}</td><td>${recTxt(v)}${/^Team record/.test(l)?` <span class="muted">(${v.n} game${v.n===1?'':'s'})</span>`:''}</td></tr>`:'').join('')}</tbody></table>
       <p class="help" style="margin:8px 0 4px">Recent games (oldest → newest):</p><div>${strip}</div>
       <table class="grid" style="margin-top:10px"><thead><tr><th>Date</th><th>${m==='canyon'?'Side':'Session'}</th><th>Result</th><th>Score</th><th>Their score</th><th>Rank</th></tr></thead><tbody>
-      ${r.rows.slice().reverse().map(x=>`<tr><td>${esc(x.r.date)}</td><td>${esc(m==='canyon'?(x.r.side||'—'):(x.r.slot||'—'))}</td><td><span class="badge ${x.r.win?'b-start':'b-ban'}">${x.r.win?'WIN':'LOSS'}</span></td><td>${nfmt(x.r.ourScore)}</td><td>${nfmt(x.r.theirScore)}</td><td>${x.p.rank||'—'}</td></tr>`).join('')}
+      ${r.games.slice().reverse().map(x=>`<tr><td>${esc(x.r.date)}</td><td>${esc(m==='canyon'?(x.r.side||'—'):(x.r.slot||'—'))}</td><td><span class="badge ${x.r.win?'b-start':'b-ban'}">${x.r.win?'WIN':'LOSS'}</span></td><td>${nfmt(x.r.ourScore)}</td><td>${nfmt(x.r.theirScore)}</td><td>${x.p&&x.p.rank?x.p.rank:'—'}</td></tr>`).join('')}
       </tbody></table>`;
   };
   const win=`<div class="panel"><h2>Winning</h2>${winSec('canyon')}${winSec('desert')}
-    <p class="help">"Team record when not playing" only counts games that have a player list. It's a small-sample comparison, so read it with the game counts.</p></div>`;
+    <p class="help">Older results have no player list, so those games are matched to the attendance log (same date, and same session for Desert; Canyon dates only when both matches had the same result). "Team record when not playing" only counts games that have a player list. It's a small-sample comparison, so read it with the game counts.</p></div>`;
 
   // ---- scores ----
   const LBL={total:'Total',battle:'Battle',assistance:'Assist',strategy:'Strategy',score:'Score'};
