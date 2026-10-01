@@ -77,6 +77,10 @@
   .banner.view{background:#1d2433;border:1px solid var(--border);color:var(--muted)}
   .banner.warn{background:#3a2f10;border:1px solid #6b5316;color:var(--accent)}
   body.viewonly .admin-only{display:none !important}
+  /* logged-out visitors see only the lock screen — everything else is behind the admin login */
+  body.viewonly nav, body.viewonly main, body.viewonly #modeBanner{display:none !important}
+  #lockScreen{display:none;max-width:420px;margin:60px auto;padding:0 22px;text-align:center}
+  body.viewonly #lockScreen{display:block}
   .modal{position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:200}
   .modal .box{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:22px;width:min(380px,92vw)}
   .modal h3{margin:0 0 12px;color:var(--accent)}
@@ -97,7 +101,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-09-30 18:05 UTC · New Event: subs ordered by closeness to starter</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-10-01 16:07 UTC · banned beats N/A in picker; whole app behind admin login</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -117,6 +121,7 @@
   <div id="authBar" class="authbar"></div>
 </header>
 <div id="modeBanner"></div>
+<div id="lockScreen"><h2>🔒 Admin login required</h2><p class="muted">Everything in Storm Manager is behind the admin login.</p><button class="btn" onclick="showLogin()">Admin login</button></div>
 <main>
 
 <!-- ============ NEW EVENT TAB ============ -->
@@ -748,7 +753,7 @@ window.showLogin=()=>{
   wrap.querySelector('#liEmail').focus();
 };
 async function pullCloud(){
-  if(!CLOUD) return;
+  if(!CLOUD||!auth.token) return;   // logged-out visitors don't load any data
   try{
     const v=await cloudLoad();
     if(v&&v.players){ db=migrate(v); try{localStorage.setItem(LS_KEY,JSON.stringify(db));}catch(e){} }
@@ -1685,8 +1690,11 @@ function runAssign(){
   const banned=[], pool=[], notAvail=[];
   for(const a of apps){
     const p=getPlayer(a.name);
+    // Ban check first: a banned player who also voted "not available" is still
+    // serving the ban, so it must be logged (and fairness-coded) as banned.
+    if(isBanned(p,mode,date)){ banned.push({...a,p}); continue; }
     if(a.avail==='na'){ notAvail.push({name:p.name}); continue; }
-    (isBanned(p,mode,date)?banned:pool).push({...a,p});
+    pool.push({...a,p});
   }
   /* Selection order: guaranteed first, then
        1. least recently picked
@@ -3176,7 +3184,6 @@ applyAccess(); renderAuthBar(); renderSquadTab();
   if(auth.refresh) await refreshSession();
   await pullCloud();
   setInterval(refreshSession, 45*60*1000);          // keep the admin session alive
-  setInterval(()=>{ if(!auth.token) pullCloud(); }, 60*1000); // viewers poll for updates
 })();
 
 /* ================= settings / data ================= */
