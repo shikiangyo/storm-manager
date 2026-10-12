@@ -101,7 +101,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-10-01 16:07 UTC · banned beats N/A in picker; whole app behind admin login</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-10-11 11:11 UTC · PNG downloads phone-shaped (cards, teams stacked)</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -2201,9 +2201,18 @@ function evTeamsSVG(A){
   // shown, on a History-sourced export too, since it's computed live from
   // each row's own power below rather than from A.dsStrength (which a saved
   // History event never has — see evToAssignmentLike above).
-  const POWERBAR_H=52;
-  const baseTop=hasSubtitle?96:72;
-  const COLW=430, GAP=24, PAD=28, ROWH=22, TOP=baseTop+POWERBAR_H;
+  // Phone-shaped (PNG_W wide): Noon above Evening rather than side by side,
+  // so it reads on a phone without zooming in.
+  const subtitle=A.dsStrength
+    ? (A.desertSplit==='balanced' ? '"Both" voters split evenly by DS Ranking'
+       : (A.mode==='canyon'&&A.canyonSplit==='balanced') ? `${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} came out stronger — "both" voters dealt evenly by DS Ranking`
+       : `${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} is the stronger side`)
+    : A.canyonSplit==='priority' ? 'Team A (Noon) is the priority team' : '';
+  const PAD=20, COLW=PNG_W-PAD*2, GAP=14, ROWH=22, WRAPW=COLW-32;
+  const subLines=hasSubtitle&&subtitle?pngWrap(subtitle.toUpperCase(),COLW,13,700):[];
+  const POWERBAR_H=66;
+  const baseTop=72+subLines.length*18;
+  const TOP=baseTop+POWERBAR_H;
   const rowsOf=slot=>A.teams[slot].map((m,i)=>{
     const d=dsStrengthOf(m.name);
     return {i,name:m.name,starter:i<A.starters,guaranteed:m.guaranteed,grade:d.grade,power:d.power};
@@ -2214,18 +2223,19 @@ function evTeamsSVG(A){
     const subLine=rows.some(r=>!r.starter)?ROWH:0; // "SUBS" divider row, once
     return 54+rows.length*ROWH+subLine+16;
   };
-  const bodyH=Math.max(colH('noon'),colH('evening'));
-  const waitLines=A.waitlist.length?Math.ceil(esc(A.waitlist.map(m=>m.name).join(', ')).length/110):0;
-  const naLines=A.notAvailable.length?Math.ceil(esc(A.notAvailable.map(m=>m.name).join(', ')).length/110):0;
+  const bodyH=colH('noon')+GAP+colH('evening');
+  const waitL=A.waitlist.length?pngWrap(A.waitlist.map(m=>m.name).join(', '),WRAPW,12,400,', '):[];
+  const naL=A.notAvailable.length?pngWrap(A.notAvailable.map(m=>m.name).join(', '),WRAPW,12,400,', '):[];
+  const waitLines=waitL.length, naLines=naL.length;
   const footH=(waitLines||naLines)?24+(waitLines?16+waitLines*16:0)+(naLines?16+naLines*16:0)+12:0;
-  const W=PAD*2+COLW*2+GAP, H=TOP+bodyH+footH+PAD;
+  const W=PNG_W, H=TOP+bodyH+footH+PAD;
 
-  const col=(slot,label,accent,x)=>{
+  const col=(slot,label,accent,x,top)=>{
     const rows=slot==='noon'?noon:evening;
-    let s=`<rect x="${x}" y="${TOP}" width="${COLW}" height="${colH(slot)}" rx="10" fill="${EV.panel}" stroke="${EV.border}"/>
-<rect x="${x}" y="${TOP}" width="${COLW}" height="4" rx="2" fill="${accent}"/>
-<text x="${x+18}" y="${TOP+30}" font-family="Arial,sans-serif" font-weight="700" font-size="16" fill="${accent}">${esc(label)} — ${rows.length}/${A.teamSize}</text>`;
-    let y=TOP+54, sawSub=false;
+    let s=`<rect x="${x}" y="${top}" width="${COLW}" height="${colH(slot)}" rx="10" fill="${EV.panel}" stroke="${EV.border}"/>
+<rect x="${x}" y="${top}" width="${COLW}" height="4" rx="2" fill="${accent}"/>
+<text x="${x+18}" y="${top+30}" font-family="Arial,sans-serif" font-weight="700" font-size="16" fill="${accent}">${esc(label)} — ${rows.length}/${A.teamSize}</text>`;
+    let y=top+54, sawSub=false;
     rows.forEach(r=>{
       if(!r.starter&&!sawSub){
         s+=`<text x="${x+18}" y="${y+13}" font-family="Arial,sans-serif" font-weight="700" font-size="11" letter-spacing="1" fill="${EV.muted}">SUBS</text>`;
@@ -2234,8 +2244,8 @@ function evTeamsSVG(A){
       const roleColor=r.starter?EV.green:EV.accent;
       const tags=r.guaranteed?' G':''; // grade letter deliberately omitted — see the comment above evTeamsSVG
       s+=`<text x="${x+18}" y="${y+14}" font-family="Arial,sans-serif" font-size="12" fill="${EV.muted}">${r.i+1}.</text>
-<text x="${x+42}" y="${y+14}" font-family="Arial,sans-serif" font-size="13" fill="${EV.text}">${esc(r.name)}</text>
-<text x="${x+COLW-150}" y="${y+14}" font-family="Arial,sans-serif" font-size="11" fill="${roleColor}">${r.starter?'STARTER':'SUB'}${esc(tags)}</text>
+<text x="${x+42}" y="${y+14}" font-family="Arial,sans-serif" font-size="13" fill="${EV.text}">${esc(pngFit(r.name,COLW-42-130,13))}</text>
+<text x="${x+COLW-118}" y="${y+14}" font-family="Arial,sans-serif" font-size="11" fill="${roleColor}">${r.starter?'STARTER':'SUB'}${esc(tags)}</text>
 <text x="${x+COLW-18}" y="${y+14}" text-anchor="end" font-family="Arial,sans-serif" font-size="12" fill="${EV.muted}">${fmtM(r.power)}</text>`;
       y+=ROWH;
     });
@@ -2245,23 +2255,18 @@ function evTeamsSVG(A){
   let foot='';
   if(waitLines||naLines){
     let fy=TOP+bodyH+24;
-    foot+=`<rect x="${PAD}" y="${TOP+bodyH+8}" width="${COLW*2+GAP}" height="${footH-8}" rx="8" fill="${EV.panel2}" stroke="${EV.border}"/>`;
+    foot+=`<rect x="${PAD}" y="${TOP+bodyH+8}" width="${COLW}" height="${footH-8}" rx="8" fill="${EV.panel2}" stroke="${EV.border}"/>`;
     if(waitLines){
       foot+=`<text x="${PAD+16}" y="${fy+8}" font-family="Arial,sans-serif" font-weight="700" font-size="12" fill="${EV.muted}">WAITLIST</text>`;
-      foot+=wrapText(A.waitlist.map(m=>m.name).join(', '),PAD+16,fy+26,110,EV.text);
+      foot+=wrapText(waitL,PAD+16,fy+26,EV.text);
       fy+=16+waitLines*16;
     }
     if(naLines){
       foot+=`<text x="${PAD+16}" y="${fy+8}" font-family="Arial,sans-serif" font-weight="700" font-size="12" fill="${EV.muted}">NOT AVAILABLE</text>`;
-      foot+=wrapText(A.notAvailable.map(m=>m.name).join(', '),PAD+16,fy+26,110,EV.text);
+      foot+=wrapText(naL,PAD+16,fy+26,EV.text);
     }
   }
   const modeLabel=(MODES[A.mode]||A.mode).toUpperCase();
-  const subtitle=A.dsStrength
-    ? (A.desertSplit==='balanced' ? '"Both" voters split evenly by DS Ranking'
-       : (A.mode==='canyon'&&A.canyonSplit==='balanced') ? `${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} came out stronger — "both" voters dealt evenly by DS Ranking`
-       : `${A.dsStrength.strongSide==='noon'?'Noon':'Evening'} is the stronger side`)
-    : A.canyonSplit==='priority' ? 'Team A (Noon) is the priority team' : '';
   const totalNoon=noon.reduce((s,r)=>s+r.power,0), totalEve=evening.reduce((s,r)=>s+r.power,0);
   const totalPower=totalNoon+totalEve;
   const noonPct=totalPower?totalNoon/totalPower*100:50;
@@ -2271,34 +2276,28 @@ function evTeamsSVG(A){
   const barW=W-PAD*2, barY=baseTop+26, noonW=barW*noonPct/100;
   const powerBar=`
 <text x="${PAD}" y="${baseTop+14}" font-family="Arial,sans-serif" font-size="13" fill="${EV.text}">☀️ Noon <tspan font-weight="700">${fmtM(totalNoon)}</tspan></text>
-<text x="${W/2}" y="${baseTop+14}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="${EV.muted}">${esc(aheadLabel)}</text>
 <text x="${W-PAD}" y="${baseTop+14}" text-anchor="end" font-family="Arial,sans-serif" font-size="13" fill="${EV.text}">🌙 Evening <tspan font-weight="700">${fmtM(totalEve)}</tspan></text>
 <clipPath id="pbclip"><rect x="${PAD}" y="${barY}" width="${barW}" height="10" rx="5"/></clipPath>
 <g clip-path="url(#pbclip)">
 <rect x="${PAD}" y="${barY}" width="${barW}" height="10" fill="${EV.border}"/>
 <rect x="${PAD}" y="${barY}" width="${noonW}" height="10" fill="${EV.accent2}"/>
 <rect x="${PAD+noonW}" y="${barY}" width="${barW-noonW}" height="10" fill="${EV.purple}"/>
-</g>`;
+</g>
+<text x="${W/2}" y="${barY+28}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="${EV.muted}">${esc(aheadLabel)}</text>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Arial,sans-serif">
 <rect x="0" y="0" width="${W}" height="${H}" fill="${EV.bg}"/>
 <rect x="0" y="0" width="${W}" height="4" fill="${EV.accent}"/>
 <text x="${PAD}" y="46" font-family="Arial,sans-serif" font-weight="700" font-size="24" fill="${EV.text}">${esc(modeLabel)} — ${esc(A.date)}</text>
-${subtitle?`<text x="${PAD}" y="70" font-family="Arial,sans-serif" font-weight="700" font-size="13" fill="${EV.accent}">${esc(subtitle.toUpperCase())}</text>`:''}
+${subLines.map((l,i)=>`<text x="${PAD}" y="${70+i*18}" font-family="Arial,sans-serif" font-weight="700" font-size="13" fill="${EV.accent}">${esc(l)}</text>`).join('')}
 ${powerBar}
-${col('noon','☀️ NOON',EV.accent2,PAD)}
-${col('evening','🌙 EVENING',EV.purple,PAD+COLW+GAP)}
+${col('noon','☀️ NOON',EV.accent2,PAD,TOP)}
+${col('evening','🌙 EVENING',EV.purple,PAD,TOP+colH('noon')+GAP)}
 ${foot}
 </svg>`;
 }
-// Simple manual word-wrap for the SVG waitlist/not-available lines (no <foreignObject> —
+// Already-wrapped (pngWrap) waitlist/not-available lines as SVG text (no <foreignObject> —
 // keeps this renderable straight through the same canvas pipeline as the poster).
-function wrapText(str,x,y,maxChars,color){
-  const words=str.split(', '); const lines=[]; let cur='';
-  words.forEach(w=>{
-    const next=cur?cur+', '+w:w;
-    if(next.length>maxChars){ lines.push(cur); cur=w; } else cur=next;
-  });
-  if(cur) lines.push(cur);
+function wrapText(lines,x,y,color){
   return lines.map((l,i)=>`<text x="${x}" y="${y+i*16}" font-family="Arial,sans-serif" font-size="12" fill="${color}">${esc(l)}</text>`).join('');
 }
 // Shared by the "3 · Teams" step's own button and the History tab's per-event
@@ -2309,7 +2308,7 @@ async function downloadTeamsPng(A,btn){
   const orig=btn?btn.textContent:null;
   if(btn){ btn.disabled=true; btn.textContent='Rendering…'; }
   try{
-    await csDownloadPNG(evTeamsSVG(A), `${A.mode}-${A.date}-teams.png`, 2);
+    await csDownloadPNG(evTeamsSVG(A), `${A.mode}-${A.date}-teams.png`, 3);
   }catch(e){
     toast('PNG export failed: '+(e&&e.message||e),'err');
   }finally{
@@ -2924,7 +2923,7 @@ window.downloadGridPng=mode=>{
     tableToPng(table,
       label+' — History grid',
       q?`Filtered: "${q}"`:'All players',
-      `${mode}-history-grid${slug}-${stamp}.png`);
+      `${mode}-history-grid${slug}-${stamp}.png`,{key:-1});
     toast('PNG downloaded');
   }catch(e){ toast(e.message,'err'); }
 };
@@ -5806,11 +5805,11 @@ function renderResults(mode){
    SVG->canvas->PNG pipeline as the teams image/poster (csDownloadPNG) rather
    than a second charting mechanism. */
 const RES_CHART_WINDOW=10;
-function resWinChartSVG(mode){
+function resWinChartSVG(mode,W){
   const reps=resReports(mode).slice().sort((a,b)=>resTime(a)-resTime(b));
   const C={bg:'#12151c',grid:'#262d3c',ref:'#3a4257',line:'#f0a832',
            fill:'rgba(240,168,50,0.14)',text:'#e6eaf2',muted:'#8b96ab'};
-  const W=920,H=280,PAD_L=44,PAD_R=16,PAD_T=20,PAD_B=32;
+  W=W||920; const H=W<600?240:280,PAD_L=44,PAD_R=16,PAD_T=20,PAD_B=32;
   const plotW=W-PAD_L-PAD_R, plotH=H-PAD_T-PAD_B;
   if(reps.length<2){
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
@@ -5836,7 +5835,7 @@ function resWinChartSVG(mode){
     const d=new Date(dateStr+'T00:00:00Z');
     return MONTHS[d.getUTCMonth()]+' '+d.getUTCFullYear();
   };
-  const tickN=Math.min(8,n);
+  const tickN=Math.min(W<600?4:8,n);
   const ticks=[...Array(tickN)].map((_,i)=>Math.round(i*(n-1)/Math.max(1,tickN-1)));
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
 <rect width="${W}" height="${H}" fill="${C.bg}"/>
@@ -5852,20 +5851,104 @@ ${ticks.map((i,idx)=>{
 }
 window.resChartPng=function(mode){
   try{
-    const svg=resWinChartSVG(mode);
-    csDownloadPNG(svg,mode+'-win-form-'+new Date().toISOString().slice(0,10)+'.png',2)
+    // phone-width chart with a title strip on top
+    const PAD=14, cw=PNG_W-PAD*2;
+    const chart=resWinChartSVG(mode,cw).replace(/^<svg[^>]*>/,'').replace(/<\/svg>$/,'');
+    const ch=cw<600?240:280;
+    const svg=pngSVG(PNG_W,PAD+52+ch+PAD+20,
+      pngT(PAD,PAD+22,RES_MODE_NAME[mode]+' — Win % over time',{size:18,w:700,fill:PNG_C.accent})+
+      pngT(PAD,PAD+40,'Rolling win rate over the last ~'+RES_CHART_WINDOW+' matches',{size:12,fill:PNG_C.muted})+
+      `<g transform="translate(${PAD},${PAD+52})">${chart}</g>`+
+      pngT(PAD,PAD+52+ch+18,'Storm Manager · '+new Date().toLocaleDateString(),{size:11,fill:PNG_C.muted}));
+    csDownloadPNG(svg,mode+'-win-form-'+new Date().toISOString().slice(0,10)+'.png',3)
       .catch(e=>toast(e.message,'err'));
   }catch(e){ toast(e.message,'err'); }
 };
 
+/* ---- phone-shaped PNGs ------------------------------------------------------
+   Every PNG export is laid out PNG_W wide (drawn at 3x so it stays sharp) so it
+   reads on a phone without zooming or scrolling sideways — the same idea as the
+   1gndata phone lists: a wide table becomes one card per row, the name and the
+   number that matters on the first line, everything else wrapped underneath. */
+const PNG_W=440;
+const PNG_FONT='ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+const PNG_C={bg:'#12151c',panel:'#1b202b',card:'#232a38',line:'#323b4d',text:'#e6eaf2',
+             muted:'#8b96ab',accent:'#f0a832',blue:'#4a9eff',win:'#3ecf8e',loss:'#f05b5b'};
+let pngCtx=null;
+function pngTextW(s,size,weight){
+  if(!pngCtx) pngCtx=document.createElement('canvas').getContext('2d');
+  pngCtx.font=(weight||400)+' '+size+'px '+PNG_FONT;
+  return pngCtx.measureText(String(s)).width;
+}
+function pngFit(s,px,size,weight){
+  s=String(s);
+  if(pngTextW(s,size,weight)<=px) return s;
+  while(s.length>1&&pngTextW(s+'…',size,weight)>px) s=s.slice(0,-1);
+  return s+'…';
+}
+// word-wrap to a pixel width (sep is what joins the pieces back up)
+function pngWrap(s,px,size,weight,sep){
+  sep=sep||' ';
+  const lines=[]; let cur='';
+  for(const w of String(s).split(sep)){
+    const next=cur?cur+sep+w:w;
+    if(cur&&pngTextW(next,size,weight)>px){ lines.push(cur); cur=w; } else cur=next;
+  }
+  if(cur) lines.push(cur);
+  return lines.map(l=>pngFit(l,px,size,weight));
+}
+function pngT(x,y,s,o){
+  o=o||{};
+  return `<text x="${x}" y="${y}" font-size="${o.size||12}" font-weight="${o.w||400}" fill="${o.fill||PNG_C.text}"${o.anchor?` text-anchor="${o.anchor}"`:''}>${esc(s)}</text>`;
+}
+const pngResultColour=v=>/^(WIN|W)$/.test(v)?PNG_C.win:/^(LOSS|L)$/.test(v)?PNG_C.loss:null;
+// The column a card shows top-right: the result, else the column the table is
+// sorted by, else the second column (e.g. the Record row's W–L).
+function pngKeyCol(hs,sorted){
+  const r=hs.findIndex(h=>/^result$/i.test(h));
+  if(r>0) return r;
+  if(sorted>0) return sorted;
+  return hs.length>1?1:-1;
+}
+// One card per table row at (x,y), w wide. Returns {svg,h}.
+function pngCards(hs,rows,key,x,y,w){
+  const IP=10, LH=17, GAP=14;
+  let svg='', cy=y;
+  for(const r of rows){
+    const kv=key>0?(r[key]||''):'';
+    const kw=kv?pngTextW(kv,14,700)+12:0;
+    let line1=pngT(x+IP,cy+22,pngFit(r[0]||'',w-IP*2-kw,14,600),{size:14,w:600});
+    if(kv) line1+=pngT(x+w-IP,cy+22,kv,{size:14,w:700,anchor:'end',fill:pngResultColour(kv)||PNG_C.accent});
+    // everything else as "Header value" pieces, flowed across as many lines as needed
+    let lx=x+IP, ly=cy+42, rest='', any=false;
+    r.forEach((v,i)=>{
+      if(i===0||i===key||!v) return;
+      const lab=hs[i]||'', vv=pngFit(v,w-IP*2-(lab?pngTextW(lab,11)+4:0),12,600);
+      const pw=(lab?pngTextW(lab,11)+4:0)+pngTextW(vv,12,600);
+      if(any&&lx+pw>x+w-IP){ lx=x+IP; ly+=LH; }
+      if(lab) rest+=pngT(lx,ly,lab,{size:11,fill:PNG_C.muted});
+      rest+=pngT(lx+(lab?pngTextW(lab,11)+4:0),ly,vv,{size:12,w:600,fill:pngResultColour(v)||PNG_C.text});
+      lx+=pw+GAP; any=true;
+    });
+    const ch=any?ly-cy+10:34;
+    svg+=`<rect x="${x}" y="${cy}" width="${w}" height="${ch}" rx="8" fill="${PNG_C.card}" stroke="${PNG_C.line}"/>`+line1+rest;
+    cy+=ch+6;
+  }
+  return {svg,h:cy-y};
+}
+function pngSVG(W,H,body){
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${PNG_FONT}"><rect width="${W}" height="${H}" fill="${PNG_C.bg}"/><rect width="${W}" height="4" fill="${PNG_C.accent}"/>${body}</svg>`;
+}
+
 /* ---- download a table as a PNG -------------------------------------------
-   Drawn onto a canvas from the table's own text rather than screenshotting the
-   page, so it needs no library, works offline, and comes out the same whatever
-   is scrolled into view. Rendered at 2x so it stays sharp when pasted into
-   Discord or a doc. */
+   Built from the table's own text rather than screenshotting the page, so it
+   needs no library, works offline, and comes out the same whatever is scrolled
+   into view. opts.key overrides which column goes top-right on each card (-1
+   for none). */
 const RES_PANEL={record:'Record',players:'Players',matches:'Matches'};
 
-function tableToPng(table,title,subtitle,filename){
+function tableToPng(table,title,subtitle,filename,opts){
+  opts=opts||{};
   const ths=[...table.querySelectorAll('thead th')];
   // columns marked no-export (the delete buttons) are left out of the image
   const keep=ths.map((th,i)=>th.classList.contains('no-export')?-1:i).filter(i=>i>=0);
@@ -5874,82 +5957,17 @@ function tableToPng(table,title,subtitle,filename){
     .map(tr=>keep.map(i=>((tr.children[i]||{}).textContent||'').trim().replace(/\s+/g,' ')));
   if(!rows.length) throw new Error('nothing to download yet');
 
-  const C={bg:'#12151c',head:'#232a38',row:'#1b202b',alt:'#171c26',
-           line:'#323b4d',text:'#e6eaf2',muted:'#8b96ab',accent:'#f0a832',
-           win:'#3ecf8e',loss:'#f05b5b'};
-  const FONT='13px ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
-  const BOLD='600 '+FONT, TITLE='700 18px '+FONT.slice(5), SUB='12px '+FONT.slice(5);
-  const PAD=18, GUT=16, ROW=30, HEAD=34, TOP=58, FOOT=26;
-
-  const c=document.createElement('canvas');
-  const x=c.getContext('2d');
-
-  // measure everything first — sizing the canvas resets the context
-  x.font=BOLD;
-  const w=head.map(h=>x.measureText(h).width);
-  x.font=FONT;
-  rows.forEach(r=>r.forEach((v,i)=>{ w[i]=Math.max(w[i]||0,x.measureText(v).width); }));
-  const colW=w.map(v=>Math.ceil(v)+GUT*2);
-  const tableW=colW.reduce((a,b)=>a+b,0);
-  x.font=TITLE;
-  const titleW=x.measureText(title).width;
-
-  const W=Math.ceil(Math.max(tableW,titleW)+PAD*2);
-  const H=Math.ceil(TOP+HEAD+rows.length*ROW+FOOT+PAD);
-  const S=2;
-  c.width=W*S; c.height=H*S;
-  x.scale(S,S);
-  x.textBaseline='middle';
-
-  x.fillStyle=C.bg; x.fillRect(0,0,W,H);
-  x.fillStyle=C.accent; x.font=TITLE;
-  x.fillText(title,PAD,PAD+10);
-  x.fillStyle=C.muted; x.font=SUB;
-  x.fillText(subtitle,PAD,PAD+32);
-
-  // a column is right-aligned when every value in it reads as a number
-  // …a plain number, a percentage, or a W–L pair like "5–1"
-  const numeric=head.map((_,i)=>
-    rows.every(r=>!r[i]||/^[-+]?[\d,]+(\.\d+)?%?$/.test(r[i])||/^\d+–\d+$/.test(r[i])));
-
-  const drawRow=(cells,y,h,font,colour)=>{
-    x.font=font;
-    let cx=PAD;
-    cells.forEach((v,i)=>{
-      // the result column loses its badge in a flat image, so colour the word
-      x.fillStyle=(v==='WIN'&&colour!==C.muted)?C.win
-                 :(v==='LOSS'&&colour!==C.muted)?C.loss:colour;
-      if(numeric[i]){ x.textAlign='right'; x.fillText(v,cx+colW[i]-GUT,y+h/2); }
-      else { x.textAlign='left'; x.fillText(v,cx+GUT,y+h/2); }
-      cx+=colW[i];
-    });
-    x.textAlign='left';
-  };
-
-  let y=TOP;
-  x.fillStyle=C.head; x.fillRect(PAD,y,tableW,HEAD);
-  drawRow(head,y,HEAD,BOLD,C.muted);
-  y+=HEAD;
-  rows.forEach((r,i)=>{
-    x.fillStyle=i%2?C.alt:C.row; x.fillRect(PAD,y,tableW,ROW);
-    drawRow(r,y,ROW,FONT,C.text);
-    x.strokeStyle=C.line; x.lineWidth=1;
-    x.beginPath(); x.moveTo(PAD,y+.5); x.lineTo(PAD+tableW,y+.5); x.stroke();
-    y+=ROW;
-  });
-  x.strokeStyle=C.line;
-  x.strokeRect(PAD+.5,TOP+.5,tableW-1,HEAD+rows.length*ROW-1);
-
-  x.fillStyle=C.muted; x.font=SUB;
-  x.fillText('Storm Manager · '+new Date().toLocaleDateString(),PAD,y+16);
-
-  c.toBlob(blob=>{
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url; a.download=filename;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),4000);
-  },'image/png');
+  const PAD=14, W=PNG_W;
+  const key=opts.key!=null?opts.key:pngKeyCol(head,keep.findIndex(i=>ths[i].classList.contains('on')));
+  let y=PAD+4, body='';
+  for(const l of pngWrap(title,W-PAD*2,18,700)){ body+=pngT(PAD,y+18,l,{size:18,w:700,fill:PNG_C.accent}); y+=24; }
+  if(subtitle){ body+=pngT(PAD,y+12,subtitle,{size:12,fill:PNG_C.muted}); y+=20; }
+  y+=8;
+  const cards=pngCards(head,rows,key,PAD,y,W-PAD*2);
+  body+=cards.svg; y+=cards.h+6;
+  body+=pngT(PAD,y+10,'Storm Manager · '+new Date().toLocaleDateString(),{size:11,fill:PNG_C.muted});
+  y+=PAD+10;
+  return csDownloadPNG(pngSVG(W,y,body),filename,3).catch(e=>toast('PNG export failed: '+(e&&e.message||e),'err'));
 }
 
 /* ---- removing results ----------------------------------------------------
@@ -6224,11 +6242,11 @@ function psResults(mode,key,built){
     rankPos:idx>=0?idx+1:null, rankOf:st.players.length};
 }
 
-function psChartSVG(pts){
+function psChartSVG(pts,W){
   const C={bg:'#12151c',grid:'#262d3c',line:'#f0a832',avg:'#4a9eff',text:'#e6eaf2',muted:'#8b96ab'};
-  const W=920,H=260,PL=56,PR=16,PT=20,PB=32, pw=W-PL-PR, ph=H-PT-PB;
+  W=W||920; const H=W<600?220:260,PL=56,PR=16,PT=20,PB=32, pw=W-PL-PR, ph=H-PT-PB;
   const font='ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
-  const open=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto" font-family="${font}"><rect width="${W}" height="${H}" fill="${C.bg}"/>`;
+  const open=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%;height:auto" font-family="${font}" data-pts="${esc(JSON.stringify(pts))}"><rect width="${W}" height="${H}" fill="${C.bg}"/>`;
   if(pts.length<2) return open+`<text x="${W/2}" y="${H/2}" text-anchor="middle" font-size="13" fill="${C.muted}">Not enough games yet for a trend line</text></svg>`;
   const top=Math.max(1,...pts.map(p=>p.val),...pts.map(p=>p.avg||0))*1.08;
   const n=pts.length, px=i=>PL+pw*i/(n-1), py=v=>PT+ph*(1-v/top);
@@ -6237,7 +6255,7 @@ function psChartSVG(pts){
   const tick=d=>{ const x=new Date(d+'T00:00:00Z'); return M[x.getUTCMonth()]+' '+x.getUTCFullYear(); };
   const line=(f)=>pts.map((p,i)=>(i?'L':'M')+px(i).toFixed(1)+','+py(f(p)).toFixed(1)).join(' ');
   const avgPts=pts.filter(p=>p.avg!=null);
-  const tn=Math.min(8,n), ticks=[...Array(tn)].map((_,i)=>Math.round(i*(n-1)/Math.max(1,tn-1)));
+  const tn=Math.min(W<600?4:8,n), ticks=[...Array(tn)].map((_,i)=>Math.round(i*(n-1)/Math.max(1,tn-1)));
   return open+
     [0,.25,.5,.75,1].map(g=>`<line x1="${PL}" y1="${py(top*g).toFixed(1)}" x2="${W-PR}" y2="${py(top*g).toFixed(1)}" stroke="${C.grid}"/><text x="${PL-8}" y="${py(top*g).toFixed(1)}" text-anchor="end" dominant-baseline="middle" font-size="11" fill="${C.muted}">${short(top*g)}</text>`).join('')+
     ticks.map((i,x)=>`<text x="${px(i).toFixed(1)}" y="${H-10}" text-anchor="${x===0?'start':x===ticks.length-1?'end':'middle'}" font-size="10" fill="${C.muted}">${esc(tick(pts[i].date))}</text>`).join('')+
@@ -6257,7 +6275,8 @@ window.psDownloadPng=function(){
   const p=db.players[psSel];
   const FONT='ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
   const C={bg:'#12151c',panel:'#1b202b',head:'#232a38',line:'#323b4d',text:'#e6eaf2',muted:'#8b96ab',accent:'#f0a832',blue:'#4a9eff',win:'#3ecf8e',loss:'#f05b5b'};
-  const PAD=18, CW=920, W=CW+PAD*2, IN=PAD, IW=CW-PAD*2, MAXROWS=15;
+  // phone-shaped like the other PNG exports: PNG_W wide, wide tables as cards
+  const PAD=14, W=PNG_W, CW=W-PAD*2, IN=PAD, IW=CW-PAD*2, MAXROWS=15;
   const T=(x,y,s,o)=>{ o=o||{}; return `<text x="${x}" y="${y}" font-size="${o.size||12}" font-weight="${o.w||400}" fill="${o.fill||C.text}"${o.anchor?` text-anchor="${o.anchor}"`:''}>${esc(s)}</text>`; };
   const txt=el=>(el.textContent||'').replace(/\s+/g,' ').trim();
   const fit=(s,px,size)=>{ const max=Math.max(1,Math.floor(px/(size*0.56))); return s.length>max?s.slice(0,max-1)+'…':s; };
@@ -6267,9 +6286,9 @@ window.psDownloadPng=function(){
   const colour=s=>/^(WIN|W)$/.test(s)?C.win:/^(LOSS|L)$/.test(s)?C.loss:C.text;
 
   let y=PAD, out='';
-  out+=T(PAD,y+22,p.name,{size:24,w:700,fill:C.accent});
-  out+=T(W-PAD,y+22,'Storm Manager · Player stats · '+new Date().toISOString().slice(0,10),{size:11,fill:C.muted,anchor:'end'});
-  y+=40;
+  out+=T(PAD,y+22,pngFit(p.name,W-PAD*2,24,700),{size:24,w:700,fill:C.accent});
+  out+=T(PAD,y+40,'Storm Manager · Player stats · '+new Date().toISOString().slice(0,10),{size:11,fill:C.muted});
+  y+=56;
 
   for(const panel of body.children){
     if(!panel.classList.contains('panel')||panel.id==='psDsExtra') continue;
@@ -6284,7 +6303,13 @@ window.psDownloadPng=function(){
         let rows=[...el.querySelectorAll('tbody tr')].map(tr=>[...tr.children].map(txt));
         const n=hs.length||(rows[0]||[]).length||1, more=Math.max(0,rows.length-MAXROWS);
         rows=rows.slice(0,MAXROWS);
-        const first=n===1?IW:Math.round(IW*(n>=5?0.28:0.34)), rest=n>1?(IW-first)/(n-1):0;
+        if(n>3){ // too many columns for a phone width: one card per row
+          const cards=pngCards(hs,rows,pngKeyCol(hs,-1),IN+PAD,y,IW);
+          buf+=cards.svg; y+=cards.h;
+          if(more){ buf+=T(IN+PAD,y+12,'… and '+more+' earlier row'+(more===1?'':'s'),{size:11,fill:C.muted}); y+=20; }
+          y+=6; continue;
+        }
+        const first=n===1?IW:Math.round(IW*(n===2?0.5:0.4)), rest=n>1?(IW-first)/(n-1):0;
         const xs=[...Array(n)].map((_,i)=>IN+PAD+(i===0?0:first+rest*(i-1)));
         const wd=i=>i===0?first:rest;
         if(hs.length){
@@ -6301,12 +6326,13 @@ window.psDownloadPng=function(){
         y+=6;
       }
       else if(el.classList.contains('flexh')){
-        const tiles=[...el.querySelectorAll('.stat')], k=tiles.length||1, gap=10, tw=(IW-gap*(k-1))/k;
-        tiles.forEach((t,i)=>{ const x=IN+PAD+i*(tw+gap);
-          buf+=`<rect x="${x}" y="${y}" width="${tw}" height="54" rx="8" fill="${C.head}"/>`+
-               T(x+tw/2,y+26,txt(t.querySelector('.n')),{size:20,w:700,fill:C.accent,anchor:'middle'})+
-               T(x+tw/2,y+43,txt(t.querySelector('.l')),{size:10,fill:C.muted,anchor:'middle'}); });
-        y+=64;
+        // at most three tiles to a row on a phone-width image
+        const tiles=[...el.querySelectorAll('.stat')], k=Math.min(3,tiles.length||1), gap=10, tw=(IW-gap*(k-1))/k;
+        tiles.forEach((t,i)=>{ const x=IN+PAD+(i%k)*(tw+gap), ty=y+Math.floor(i/k)*62;
+          buf+=`<rect x="${x}" y="${ty}" width="${tw}" height="54" rx="8" fill="${C.head}"/>`+
+               T(x+tw/2,ty+26,pngFit(txt(t.querySelector('.n')),tw-8,20,700),{size:20,w:700,fill:C.accent,anchor:'middle'})+
+               T(x+tw/2,ty+43,pngFit(txt(t.querySelector('.l')),tw-8,10),{size:10,fill:C.muted,anchor:'middle'}); });
+        y+=Math.ceil((tiles.length||1)/k)*62+2;
       }
       else if(tag==='DIV'&&el.querySelector('.badge')){
         let x=IN+PAD;
@@ -6318,8 +6344,15 @@ window.psDownloadPng=function(){
         y+=28;
       }
       else if(tag==='svg'||tag==='svg'.toUpperCase()||el.namespaceURI==='http://www.w3.org/2000/svg'){
-        const sc=IW/920, h=260*sc;
-        buf+=`<g transform="translate(${IN+PAD},${y}) scale(${sc})" font-family="${FONT}">${el.innerHTML}</g>`; y+=h+10;
+        // redraw the chart at this width so its labels stay readable
+        let pts=null; try{ pts=JSON.parse(el.getAttribute('data-pts')||'null'); }catch(e){}
+        if(pts){
+          const svg=psChartSVG(pts,IW), h=IW<600?220:260;
+          buf+=`<g transform="translate(${IN+PAD},${y})">${svg.replace(/^<svg[^>]*>/,'').replace(/<\/svg>$/,'')}</g>`; y+=h+10;
+        } else {
+          const sc=IW/920, h=260*sc;
+          buf+=`<g transform="translate(${IN+PAD},${y}) scale(${sc})" font-family="${FONT}">${el.innerHTML}</g>`; y+=h+10;
+        }
       }
     }
     y+=PAD-6;
@@ -6328,7 +6361,7 @@ window.psDownloadPng=function(){
   }
   const H=y+PAD-14;
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONT}"><rect width="${W}" height="${H}" fill="${C.bg}"/>${out}</svg>`;
-  csDownloadPNG(svg,'player-stats-'+p.name.replace(/[^\w-]+/g,'_')+'-'+new Date().toISOString().slice(0,10)+'.png',2).catch(e=>toast(e.message,'err'));
+  csDownloadPNG(svg,'player-stats-'+p.name.replace(/[^\w-]+/g,'_')+'-'+new Date().toISOString().slice(0,10)+'.png',3).catch(e=>toast(e.message,'err'));
 };
 
 window.psSelect=v=>{ psSel=v||null; renderPlayerStats(); };
