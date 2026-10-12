@@ -101,7 +101,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-10-11 11:11 UTC · PNG downloads phone-shaped (cards, teams stacked)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-10-12 14:54 UTC · tap-to-swap players between Noon and Evening</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -189,7 +189,7 @@
 
   <div class="panel">
     <h2>3 · Teams <span id="modeChip"></span></h2>
-    <p class="help">Selection order: <b>guaranteed players first</b>, then everyone else by <b>longest time since last selection</b> for this mode (never-selected players first; ties broken randomly). Players banned for a recent no-show <b>in this mode</b> are excluded (Desert and Canyon bans are separate). Availability only decides <i>which</i> team you join, never <i>whether</i> you get in — noon-only and both-slot applicants have equal odds. Edits are manual: ↓ drops to waitlist, ↑ promotes, ✕ removes from the event — nothing reshuffles on its own. To change someone's availability, remove them and re-add with the new slot.
+    <p class="help">Selection order: <b>guaranteed players first</b>, then everyone else by <b>longest time since last selection</b> for this mode (never-selected players first; ties broken randomly). Players banned for a recent no-show <b>in this mode</b> are excluded (Desert and Canyon bans are separate). Availability only decides <i>which</i> team you join, never <i>whether</i> you get in — noon-only and both-slot applicants have equal odds. Edits are manual: ↓ drops to waitlist, ↑ promotes, ✕ removes from the event, and tapping one player's STARTER/SUB badge then another's (in either team) swaps them into each other's exact spot — nothing reshuffles on its own. To change someone's availability, remove them and re-add with the new slot.
       <br><br><b>Desert Storm only:</b> who gets one of the 60 spots is decided exactly as above. Separately, the stronger side is worked out from single-preference voters only: each side is ranked strongest-to-weakest by <b>DS Ranking</b> grade (power breaking a tie within the same grade), then compared head-to-head at every matched rank — 1st vs 1st, 2nd vs 2nd, and so on (an unmatched extra rank on the longer list, with nobody to compare it against, doesn't count for either side). Every won matchup scores a base 1 point. A matchup between two different grades stays at that flat 1 point, power irrelevant. A matchup between the same grade is decided by power and gets a small bonus on top of the base point — 0.1 extra per 10m of power margin, so a close 10m win scores 1.1 and a 100m blowout scores 2 — enough for a clear power gap to matter without letting one power-decided win swamp several flat grade wins. What happens next depends on the <b>"Both" voter split</b> choice above: <b>Prioritise stronger side</b> (default) gives whichever side's total score is higher first pick of the strongest "both" voters to fill it out, so that side ends up stronger rather than the two being balanced; <b>Balanced</b> instead deals that same DS-Ranking-sorted "both" list alternately between the two sides, so it's split evenly rather than stacked. Set DS Ranking on the <b>Storm Players</b> tab (admin only).</p>
     <div class="row">
       <button class="btn gold" id="btnAssign">⟳ Re-assign teams</button>
@@ -1017,7 +1017,7 @@ let review=[]; // {name, raw} — applications with unrecognised availability
 // whoever hits "Confirm & save event" clears it for everyone.
 // The New Event screen's STARTER/SUB badge is tap-to-select, tap-another-to-swap
 // (mirrors the same pattern on the Storm Build board) — {slot,i} of the first tap,
-// awaiting a second tap in the same team to swap positions (and so roles).
+// awaiting a second tap in either team to swap positions (and so roles/teams).
 let evSwapSel=null;
 
 document.getElementById('evDate').value = new Date().toISOString().slice(0,10);
@@ -1943,7 +1943,7 @@ function renderAssignment(){
       <td>${i+1}</td>
       <td>${esc(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)} ${dsBadge(m.name)}</td>
       <td>${history(m.name)}</td>
-      <td><span class="badge ${i<A.starters?'b-start':'b-sub'}" style="cursor:pointer${sel===i?';outline:2px solid var(--accent);outline-offset:1px':''}" title="${sel===i?'Tap again to cancel':evSwapSel?'Tap to swap with the selected player':'Tap, then tap another player in this team to swap them'}" onclick="evToggleTap('${slot}',${i})">${i<A.starters?'STARTER':'SUB'}</span></td>
+      <td><span class="badge ${i<A.starters?'b-start':'b-sub'}" style="cursor:pointer${sel===i?';outline:2px solid var(--accent);outline-offset:1px':''}" title="${sel===i?'Tap again to cancel':evSwapSel?'Tap to swap with the selected player (takes their exact spot)':'Tap, then tap another player in either team to swap them'}" onclick="evToggleTap('${slot}',${i})">${i<A.starters?'STARTER':'SUB'}</span></td>
       <td><button class="mini" onclick="dropMember('${slot}',${i})">↓ drop</button> <button class="mini" title="Remove from event entirely" onclick="removeMember('${slot}',${i})">✕</button></td>
     </tr>`).join('');
     const baseOnly=A.desertSplit==='balanced'; // measured before "both" voters are dealt back in, so the badge only reflects the single-preference base, not the final line-up
@@ -2101,14 +2101,24 @@ window.promoteTo=(i,slot)=>{
 // stays exactly where they were. Replaces the old behaviour, which only ever
 // swapped with the starter/sub boundary neighbour regardless of which row you
 // clicked.
+// Works across teams too: select someone in Noon, tap someone in Evening (or
+// vice versa) and each lands in exactly the other's slot — same row number,
+// same STARTER/SUB role — so team sizes and everyone else stay put.
 window.evToggleTap=(slot,i)=>{
   if(evSwapSel&&evSwapSel.slot===slot&&evSwapSel.i===i){ evSwapSel=null; renderAssignment(); return; }
-  if(!evSwapSel||evSwapSel.slot!==slot){ evSwapSel={slot,i}; renderAssignment(); return; }
-  const list=db.pendingAssignment.teams[slot], j=evSwapSel.i;
-  [list[i],list[j]]=[list[j],list[i]];
+  if(!evSwapSel){ evSwapSel={slot,i}; renderAssignment(); return; }
+  const A=db.pendingAssignment, a=evSwapSel.slot, j=evSwapSel.i;
+  const la=A.teams[a], lb=A.teams[slot];
+  [la[j],lb[i]]=[lb[i],la[j]];
   evSwapSel=null;
   save();
   renderAssignment();
+  if(a!==slot){
+    // availability is only a hint here — the swap still goes through, but flag
+    // anyone who voted for just the other sitting
+    const off=[[lb[i],slot],[la[j],a]].filter(([m,s])=>m.avail&&m.avail!=='both'&&m.avail!=='na'&&m.avail!==s).map(([m])=>m.name);
+    toast(`Swapped ${la[j].name} ↔ ${lb[i].name}`+(off.length?` — note: ${off.join(' & ')} only voted for the other sitting`:''),off.length?'err':undefined);
+  }
 };
 
 /* ================= save event ================= */
