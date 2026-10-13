@@ -96,12 +96,40 @@
   .pool{display:flex;flex-wrap:wrap;gap:6px}
   .chip{background:var(--panel2);border:1px solid var(--border);border-radius:20px;padding:4px 10px;font-size:12px;display:flex;align-items:center;gap:6px}
   .chip select{padding:1px 4px;font-size:11px;border-radius:5px}
+  /* ---- tap-to-copy player names (special characters are a pain to type in-game) ---- */
+  .cpy{cursor:copy;border-bottom:1px dotted var(--muted);-webkit-tap-highlight-color:transparent}
+  .cpy::after{content:' 📋';font-size:10px;opacity:.5}
+  .cpy.copied{color:var(--green);border-bottom-color:var(--green)}
+  .cpy.copied::after{content:' ✓';opacity:1}
+  .tblwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .nowrap{white-space:nowrap}
+  table.att td:not([colspan]){white-space:nowrap}
+  input[type=file]{max-width:100%}
+  /* ---- phones ---- */
+  @media(max-width:640px){
+    header{padding:10px 12px;gap:8px}
+    header .sub{display:none}
+    nav{margin-left:0;width:100%;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding-bottom:2px}
+    nav::-webkit-scrollbar{display:none}
+    nav button{flex:0 0 auto;padding:9px 13px}
+    main{padding:10px}
+    #modeBanner{padding:0 10px}
+    .panel{padding:12px;border-radius:10px;overflow-x:auto}
+    .team-col{min-width:0 !important;flex-basis:100%}
+    th,td{padding:7px 5px}
+    input,select,textarea{font-size:16px} /* stops iOS zooming in on focus */
+    button.mini{padding:6px 10px;font-size:13px}
+    .hide-sm{display:none}
+    /* long help paragraphs collapse to 3 lines — tap to read the rest */
+    p.help.long:not(.open){display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;position:relative;cursor:pointer}
+    p.help.long:not(.open)::after{content:'▾ more';position:absolute;right:0;bottom:0;padding-left:28px;background:linear-gradient(90deg,transparent,var(--panel) 40%);color:var(--accent2);font-weight:600}
+  }
 </style>
 </head>
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-10-13 11:42 UTC · tap-to-swap Noon↔Evening (re-upload to trigger Vercel)</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-10-13 11:53 UTC · phone layout + tap a name to copy it</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -981,10 +1009,49 @@ function isBanned(p,mode,dateStr){ return p.banUntil[mode] && dateStr < p.banUnt
 function fmtDate(d){ return d||'—'; }
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+/* Tap-to-copy player names. Names get typed into the game by hand, and ones
+   with special characters (™, ᴹᴿ, Cyrillic look-alikes…) are a pain, so any
+   name rendered through cpyName() copies its exact text on tap. Copied names
+   turn green with a ✓ for the rest of this visit, so you can work down a team
+   list without losing your place. Read from data-n (not an inline onclick
+   string) so quotes/backslashes in names can't break anything. */
+const copiedNames=new Set();
+function cpyName(n){
+  return `<span class="cpy${copiedNames.has(n)?' copied':''}" data-n="${esc(n)}" title="Tap to copy">${esc(n)}</span>`;
+}
+function copyText(txt){
+  if(navigator.clipboard&&window.isSecureContext) return navigator.clipboard.writeText(txt).then(()=>true,()=>copyTextFallback(txt));
+  return Promise.resolve(copyTextFallback(txt));
+}
+function copyTextFallback(txt){
+  const ta=document.createElement('textarea');
+  ta.value=txt; ta.setAttribute('readonly',''); ta.style.cssText='position:fixed;top:0;left:0;opacity:0';
+  document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0,txt.length);
+  let ok=false; try{ ok=document.execCommand('copy'); }catch(e){}
+  ta.remove(); return ok;
+}
+document.addEventListener('click',e=>{
+  const el=e.target.closest('.cpy'); if(!el) return;
+  e.preventDefault(); e.stopPropagation();
+  const n=el.dataset.n;
+  copyText(n).then(ok=>{
+    if(!ok){ toast('Couldn\'t copy — long-press the name to select it instead','err'); return; }
+    copiedNames.add(n);
+    document.querySelectorAll('.cpy').forEach(x=>{ if(x.dataset.n===n) x.classList.add('copied'); });
+    toast(`📋 Copied: ${n}`);
+  });
+});
+// On phones the long explanations fold to 3 lines (see p.help.long CSS); tap one to read it in full.
+document.querySelectorAll('p.help').forEach(p=>{ if(p.textContent.length>260) p.classList.add('long'); });
+document.addEventListener('click',e=>{
+  const p=e.target.closest('p.help.long:not(.open)'); if(p) p.classList.add('open');
+});
+
 /* ================= tabs ================= */
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
+  b.scrollIntoView({block:'nearest',inline:'center'}); // phones: the tab bar is a sideways-scrolling strip
   document.querySelectorAll('main > section').forEach(s=>s.style.display='none');
   document.getElementById('tab-'+b.dataset.tab).style.display='';
   if(b.dataset.tab==='event') showPendingAssignment(); // pick up any shared assignment another device set/cleared while we were away
@@ -1941,10 +2008,10 @@ function renderAssignment(){
     const sel=evSwapSel&&evSwapSel.slot===slot&&evSwapSel.i;
     const rows=list.map((m,i)=>`<tr>
       <td>${i+1}</td>
-      <td>${esc(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)} ${dsBadge(m.name)}</td>
-      <td>${history(m.name)}</td>
+      <td>${cpyName(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)} ${dsBadge(m.name)}</td>
+      <td class="hide-sm">${history(m.name)}</td>
       <td><span class="badge ${i<A.starters?'b-start':'b-sub'}" style="cursor:pointer${sel===i?';outline:2px solid var(--accent);outline-offset:1px':''}" title="${sel===i?'Tap again to cancel':evSwapSel?'Tap to swap with the selected player (takes their exact spot)':'Tap, then tap another player in either team to swap them'}" onclick="evToggleTap('${slot}',${i})">${i<A.starters?'STARTER':'SUB'}</span></td>
-      <td><button class="mini" onclick="dropMember('${slot}',${i})">↓ drop</button> <button class="mini" title="Remove from event entirely" onclick="removeMember('${slot}',${i})">✕</button></td>
+      <td class="nowrap"><button class="mini" onclick="dropMember('${slot}',${i})">↓ drop</button> <button class="mini" title="Remove from event entirely" onclick="removeMember('${slot}',${i})">✕</button></td>
     </tr>`).join('');
     const baseOnly=A.desertSplit==='balanced'; // measured before "both" voters are dealt back in, so the badge only reflects the single-preference base, not the final line-up
     // desert-priority stacks the "both" voters onto the ahead side on purpose; canyon-balanced
@@ -1968,10 +2035,10 @@ function renderAssignment(){
       const nxt=list.filter(m=>!m.guaranteed).sort((a,b)=>idx(b.name)-idx(a.name)).slice(0,3);
       dropHtml=`<div style="margin-top:8px;padding:8px 10px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;font-size:12px">
         <b>Next 3 to drop</b> <span class="muted">(last picked by fairness order — first off if you swap someone in)</span>
-        ${nxt.length?`<ol style="margin:4px 0 0 18px;padding:0">${nxt.map(m=>`<li>${esc(m.name)} ${availBadge(m.avail)}</li>`).join('')}</ol>`:'<div class="muted">none</div>'}</div>`;
+        ${nxt.length?`<ol style="margin:4px 0 0 18px;padding:0">${nxt.map(m=>`<li>${cpyName(m.name)} ${availBadge(m.avail)}</li>`).join('')}</ol>`:'<div class="muted">none</div>'}</div>`;
     }
     return `<div class="team-col"><h3>${label} team — ${list.length}/${A.teamSize}${strongTag}${priorityTag}</h3>
-      <table><tr><th>#</th><th>Player</th><th>Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table>${dropHtml}</div>`;
+      <div class="tblwrap"><table><tr><th>#</th><th>Player</th><th class="hide-sm">Last picked / applied</th><th>Role</th><th></th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>${dropHtml}</div>`;
   };
   // last 5 saved events for this mode, oldest -> newest, shown as grid-style history columns
   const recentEvs=db.events.filter(e=>e.mode===A.mode).sort((a,b)=>a.date<b.date?-1:1).slice(-5);
@@ -1988,7 +2055,7 @@ function renderAssignment(){
     const hist=recentEvs.length
       ? recentEvs.map(ev=>`<td>${gridBadge(gridValue(ev,m.name))}</td>`).join('')
       : `<td>${history(m.name)}</td>`;
-    return `<tr><td>${i+1}</td><td>${esc(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
+    return `<tr><td>${i+1}</td><td>${cpyName(m.name)} ${banBadge(m.name)}${m.guaranteed?'<span class="badge b-guar">G</span>':''} ${availBadge(m.avail)}</td>
     ${hist}
     <td>${btns.join(' ')}</td></tr>`;
   }).join('');
@@ -2030,7 +2097,7 @@ function renderAssignment(){
     ${powerCompareHtml()}
     ${dsBanner}${canyonBanner}
     <div class="flexh" style="margin-top:12px">${teamHtml('noon','☀️ Noon')}${teamHtml('evening','🌙 Evening')}</div>
-    ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><table><tr><th>#</th><th>Player</th>${wlHistHead}<th></th></tr>${wl}</table>`:''}
+    ${A.waitlist.length?`<h3>Waitlist (A–Z — use the buttons to add someone to a squad)</h3><div class="tblwrap"><table><tr><th>#</th><th>Player</th>${wlHistHead}<th></th></tr>${wl}</table></div>`:''}
     ${A.notAvailable.length?`<h3 style="color:var(--muted)">Voted — not available this week</h3><ul class="muted">${na}</ul>`:''}
     ${A.banned.length?`<h3 style="color:var(--red)">Excluded — no-show ban (cannot be added)</h3><ul class="muted">${bn}</ul>`:''}
     ${A.notVoted.length?`<h3 style="color:var(--muted)">Didn't vote</h3><ul class="muted">${nv}</ul>`:''}
@@ -2677,8 +2744,8 @@ window.openEvent=id=>{
              onchange="setAttNote(${id},'${slot}',${i},this.value)">`;
       const editing=!!(editRow&&editRow.evId===id&&editRow.slot===slot&&editRow.i===i);
       const nameCell=ro
-        ? esc(m.name)
-        : `${esc(m.name)} <button class="mini" title="Edit this person" onclick="toggleEditPerson(${id},'${slot}',${i})">${editing?'✕':'✎'}</button>`;
+        ? cpyName(m.name)
+        : `${cpyName(m.name)} <button class="mini" title="Edit this person" onclick="toggleEditPerson(${id},'${slot}',${i})">${editing?'✕':'✎'}</button>`;
       let editTr='';
       if(editing){
         const others=ev.teams[slot].map((mm,j)=>j).filter(j=>j!==i);
@@ -2707,7 +2774,7 @@ window.openEvent=id=>{
       return `<tr><td>${nameCell}</td><td><span class="badge ${m.role==='starter'?'b-start':'b-sub'}">${m.role}</span></td>
         <td>${att}</td><td>${ban}</td><td>${note}</td></tr>${editTr}`;
     }).join('');
-    return `<div class="team-col" style="min-width:520px"><h3>${label}</h3><table><tr><th>Player</th><th>Role</th><th>Attendance</th><th>Ban</th><th>Note</th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div>`;
+    return `<div class="team-col" style="min-width:520px"><h3>${label}</h3><div class="tblwrap"><table class="att"><tr><th>Player</th><th>Role</th><th>Attendance</th><th>Ban</th><th>Note</th></tr>${rows||'<tr><td colspan=5 class=muted>empty</td></tr>'}</table></div></div>`;
   };
   document.getElementById('attendancePanel').style.display='';
   document.getElementById('attendancePanel').innerHTML=`
@@ -2843,7 +2910,7 @@ function renderGrid(){
     const names=q?allNames.filter(n=>norm(n).includes(q)):allNames;
     gridNames[mode]=names; // gridEditCell's row index must match what's actually rendered below
     if(!evs.length) continue;
-    const body=names.map((n,i)=>`<tr><td>${esc(n)}</td>${evs.map(ev=>{
+    const body=names.map((n,i)=>`<tr><td>${cpyName(n)}</td>${evs.map(ev=>{
         const note=gridNote(ev,n);
         const v=gridValue(ev,n);
         const clickable=GRID_EDITABLE.includes(v);
