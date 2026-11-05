@@ -129,7 +129,7 @@
 <body>
 <header>
   <div>
-    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-10-13 11:53 UTC · phone layout + tap a name to copy it</div>
+    <h1>⚔️ Storm Manager</h1><div class="muted" style="font-size:11px;margin:-6px 0 8px">build 2026-11-05 13:58 UTC · import a game lineup into History</div>
     <div class="sub">Desert Storm &amp; Canyon Storm — applications, fair selection, attendance</div>
   </div>
   <nav>
@@ -291,6 +291,16 @@
     <h2>Events</h2>
     <p class="help">After each battle, open the event and mark no-shows. Each no-show gets the default 3-week ban, but you can set any length per player — <b>0 days = excused</b>, still logged as a no-show but no ban. Add a note (reason, warning given, etc.) against anyone; notes show as 🗒 in the history grid. Bans apply only to the mode the no-show happened in. Deleting an event removes all its effects.</p>
     <div id="eventList"></div>
+  </div>
+  <div class="panel admin-only">
+    <h2>Import a lineup from the game</h2>
+    <p class="help">For when the teams were already entered in-game but never saved here. Paste the reader's <code>lastwar-storm-lineup</code> JSON. It's saved as a normal event: session 1 &rarr; ☀️ Noon, session 2 &rarr; 🌙 Evening. "playing" becomes a starter and "sub" a substitute, matched to the roster by in-game id, then by name. Anyone the roster doesn't know yet is added. Players listed as "not picked" aren't recorded as applicants, because the lineup doesn't say whether they voted. Attendance starts as pending, the same as a normal save.</p>
+    <textarea id="lineupBox" placeholder='{"kind": "lastwar-storm-lineup", ...}'></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" onclick="lineupPreview()">Preview</button>
+      <span class="muted" id="lineupMsg"></span>
+    </div>
+    <div id="lineupPreviewArea"></div>
   </div>
   <div class="panel" id="attendancePanel" style="display:none"></div>
   <div class="panel">
@@ -3236,13 +3246,96 @@ document.getElementById('evDesertSplit').onchange=reassignOnChange;
 // under older versions, and keeps everything consistent with the event log.
 suppressSave=true; recomputeDerived(); suppressSave=false;
 
+/* ================= import a lineup from the game =================
+   The normal flow is vote -> Storm Manager picks -> save -> enter in game.
+   When someone skipped Storm Manager and set the teams in game directly, the
+   reader app's "lastwar-storm-lineup" JSON is turned into an ordinary saved
+   event here, so History, attendance, bans and fairness all pick it up. */
+let lineupParsed=null;
+function parseLineup(text){
+  let d; try{ d=JSON.parse(text); }catch(e){ throw new Error('Not valid JSON'); }
+  if(!d||d.kind!=='lastwar-storm-lineup'||!Array.isArray(d.players)) throw new Error('Not a lastwar-storm-lineup export');
+  const mode=d.mode==='canyon'?'canyon':d.mode==='desert'?'desert':null;
+  if(!mode) throw new Error(`Unknown mode "${d.mode}"`);
+  const sess=(d.sessions||[]).slice().sort((a,b)=>a.session-b.session);
+  const startOf=n=>{ const x=sess.find(s=>s.session===n); return x&&x.start?String(x.start).slice(0,10):null; };
+  const date=startOf(1)||startOf(2)||String(d.captured||'').slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Could not work out the event date');
+  const slotOf={1:'noon',2:'evening'};
+  const teams={noon:[],evening:[]};
+  for(const p of d.players){
+    const slot=slotOf[p.session]; if(!slot) continue;
+    const role=p.status==='playing'||p.state===1?'starter':p.status==='sub'||p.state===2?'sub':null;
+    if(!role) continue;
+    teams[slot].push({name:String(p.name).trim(),uid:p.uid?String(p.uid):null,role,power:+p.power||0});
+  }
+  // starters first (strongest first), then subs, so the starter/sub split reads like a normal save
+  for(const sl of ['noon','evening']) teams[sl].sort((a,b)=>(a.role===b.role?0:a.role==='starter'?-1:1)||b.power-a.power);
+  const vs=n=>{ const m=(d.matchmaking||[]).find(x=>x.session===n); if(!m||!Array.isArray(m.vs)) return null;
+    const o=m.vs.find(v=>v.abbr!=='1GN'); return o?`${o.abbr} ${o.name}`:null; };
+  return {mode,date,teams,captured:d.captured||null,id:d.id||null,opp:{noon:vs(1),evening:vs(2)}};
+}
+window.lineupPreview=()=>{
+  const msg=document.getElementById('lineupMsg'), area=document.getElementById('lineupPreviewArea');
+  lineupParsed=null; area.innerHTML=''; msg.textContent='';
+  let L; try{ L=parseLineup(document.getElementById('lineupBox').value); }catch(e){ msg.textContent=e.message; return; }
+  if(!L.teams.noon.length&&!L.teams.evening.length){ msg.textContent='No playing or sub players in this lineup'; return; }
+  lineupParsed=L;
+  const col=(sl,label)=>{
+    const rows=L.teams[sl].map(m=>{
+      const k=(m.uid&&resolveKeyByUid(m.uid))||resolveKey(m.name);
+      const tag=k?(norm(db.players[k].name)!==norm(m.name)?` <span class="muted">→ ${esc(db.players[k].name)}</span>`:''):' <span class="badge b-wait">new</span>';
+      return `<tr><td>${esc(m.name)}${tag}</td><td><span class="badge ${m.role==='starter'?'b-start':'b-sub'}">${m.role}</span></td></tr>`;
+    }).join('');
+    const st=L.teams[sl].filter(m=>m.role==='starter').length;
+    return `<div class="team-col"><h3>${label} — ${st} starters, ${L.teams[sl].length-st} subs${L.opp[sl]?` <span class="muted">vs ${esc(L.opp[sl])}</span>`:''}</h3><div class="tblwrap"><table><tr><th>Player</th><th>Role</th></tr>${rows||'<tr><td colspan=2 class=muted>empty</td></tr>'}</table></div></div>`;
+  };
+  const dup=db.events.find(e=>e.mode===L.mode&&e.date===L.date);
+  area.innerHTML=`<h3>${modeChipHtml(L.mode)} ${esc(L.date)}${L.captured?` <span class="muted" style="font-size:12px">captured ${esc(L.captured)}</span>`:''}</h3>
+    ${dup?`<p class="help" style="color:var(--warn,#e0a040)">⚠ A ${MODES[L.mode]} event on ${esc(L.date)} is already in History. Saving will ask whether to replace it.</p>`:''}
+    <div class="flexh">${col('noon','☀️ Noon')}${col('evening','🌙 Evening')}</div>
+    <div class="row" style="margin-top:8px"><button class="btn ok" onclick="lineupSave()">✓ Save to History</button></div>`;
+};
+window.lineupSave=()=>{
+  const L=lineupParsed; if(!L) return;
+  const dup=db.events.find(e=>e.mode===L.mode&&e.date===L.date);
+  if(dup){
+    if(dup.locked){ toast(`That ${MODES[L.mode]} ${L.date} event is locked. Unlock or delete it first.`,'err'); return; }
+    if(!confirm(`A ${MODES[L.mode]} event on ${L.date} already exists.\n\nReplace it with the in-game lineup? Attendance already marked on it will be lost.`)) return;
+  }
+  const P=db.pendingAssignment;
+  if(P&&P.mode===L.mode&&P.date===L.date&&confirm(`There's an unsaved ${MODES[L.mode]} ${L.date} assignment on the New Event tab.\n\nDiscard it now that the real lineup is being saved?`)) db.pendingAssignment=null;
+  const teams={noon:[],evening:[]}, seen=new Set(), apps=[];
+  for(const sl of ['noon','evening']) for(const m of L.teams[sl]){
+    const p=applicantPlayer(m.name,m.uid); // uid-aware: finds renamed players, adds unknown ones
+    const k=norm(p.name); if(seen.has(k)) continue; seen.add(k);
+    teams[sl].push({name:p.name,role:m.role,attended:null});
+    apps.push({name:p.name,avail:sl});
+  }
+  const ev={id:Date.now(),mode:L.mode,date:L.date,
+    starters:Math.max(teams.noon.filter(m=>m.role==='starter').length,teams.evening.filter(m=>m.role==='starter').length),
+    teams,waitlist:[],notAvailable:[],banned:[],
+    roster:Object.values(db.players).map(p=>p.name),
+    apps,
+    guaranteed:Object.values(db.players).filter(p=>p.guaranteed).map(p=>p.name),
+    source:'game-lineup'};
+  if(dup) db.events=db.events.filter(e=>e!==dup);
+  db.events.push(ev); db.events.sort((a,b)=>a.date<b.date?1:-1);
+  recomputeDerived();
+  renderEvents(); if(typeof renderRoster==='function') renderRoster(); showPendingAssignment();
+  lineupParsed=null; document.getElementById('lineupBox').value='';
+  document.getElementById('lineupPreviewArea').innerHTML=''; document.getElementById('lineupMsg').textContent='';
+  openEvent(ev.id);
+  toast(`${MODES[L.mode]} ${L.date} saved from the game lineup: ${teams.noon.length} noon, ${teams.evening.length} evening`);
+};
+
 /* ================= access control & startup ================= */
 // Every mutating action goes through this guard, so a viewer can never write
 // even if they craft a click on a hidden control.
 for(const n of ['delApp','setAvail','dropMember','removeMember','removeWait','removeNa','promoteTo',
   'evToggleTap','setGuar','uiRename','uiMerge','clearBan','uiBan','startBanEdit','saveBanAdjust','delPlayer','resolveReview','removeReview',
   'markAtt','setBanLen','setAttNote','markAll','applyBans','delEvent','unlockEvent','switchMode',
-  'sqAssign','sqMove','sqRename','sqSetCap','sqDelObj','sqAutoFill','doImportResults','resDelete','resDeleteAll','resSetPair']){
+  'sqAssign','sqMove','sqRename','sqSetCap','sqDelObj','sqAutoFill','doImportResults','lineupPreview','lineupSave','resDelete','resDeleteAll','resSetPair']){
   const f=window[n];
   if(typeof f==='function') window[n]=function(){
     if(!isAdmin()){ toast('View only — log in as admin to make changes','err'); return; }
